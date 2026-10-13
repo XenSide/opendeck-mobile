@@ -13,6 +13,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -114,7 +115,7 @@ fun KeypadScreen(vm: AppViewModel) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black).then(touchWakes).then(swipe)) {
+    Box(Modifier.fillMaxSize().background(Color(device.backgroundColor)).then(touchWakes).then(swipe)) {
         BoxWithConstraints(
             Modifier.fillMaxSize().padding(8.dp),
             contentAlignment = Alignment.Center,
@@ -294,6 +295,7 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
     var outerOnly by remember { mutableStateOf(current.outerCornersOnly) }
     var powerSave by remember { mutableStateOf(current.powerSave) }
     var dim by remember { mutableIntStateOf(current.dimPercent) }
+    var background by remember { mutableStateOf(current.backgroundColor) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Layout") },
@@ -331,12 +333,19 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
                     Switch(checked = powerSave, onCheckedChange = { powerSave = it })
                 }
                 if (powerSave) PercentSlider("Dimmed brightness", dim, 5..100) { dim = it }
+                Spacer(Modifier.height(8.dp))
+                Text("Background", style = MaterialTheme.typography.labelLarge)
+                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                    (listOf("Black" to 0xFF000000) + Duotones.map { it.name to it.bg }).forEach { (name, argb) ->
+                        Choice(name, selected = argb == background) { background = argb }
+                    }
+                }
             }
         },
         confirmButton = { TextButton(onClick = { onApply(
                         current.copy(
                             cols = cols, rows = rows, iconSize = iconSize, gapPercent = gap, cornerPercent = corner,
-                            outerCornersOnly = outerOnly, powerSave = powerSave, dimPercent = dim,
+                            outerCornersOnly = outerOnly, powerSave = powerSave, dimPercent = dim, backgroundColor = background,
                         ),
                     ) }) { Text("Apply") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
