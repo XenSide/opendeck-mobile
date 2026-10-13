@@ -50,12 +50,11 @@ android/
 
 ## Building
 
-You need JDK 17 or newer and the Android SDK (platform 35). The Gradle wrapper jar and
-scripts are not checked in. Generate them once with a locally installed Gradle 8.10+:
+You need JDK 17 or newer and the Android SDK (platform 35). The Gradle wrapper (8.10.2) is
+checked in, so no local Gradle install is needed:
 
 ```
 cd android
-gradle wrapper --gradle-version 8.10.2
 ./gradlew :core:test          # protocol / crypto / codec tests (no Android needed)
 ./gradlew :app:assembleDebug  # APK in app/build/outputs/apk/debug/
 ```
