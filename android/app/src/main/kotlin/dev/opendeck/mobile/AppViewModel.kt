@@ -146,11 +146,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- connection ----------
 
-    private fun connect(target: HostTarget, openDeviceID: String? = null) {
+    /** An endless reconnect after an unexpected drop; only the Busy screen's Cancel stops it. */
+    private data class Retry(val target: HostTarget, val deviceID: String)
+    private var retry: Retry? = null
+
+    private fun connect(target: HostTarget, openDeviceID: String? = null, retry: Retry? = null) {
         disconnect()
         discovery.stop()
+        this.retry = retry
         val label = target.name.ifBlank { target.endpoints.firstOrNull()?.toString() ?: "computer" }
-        screen = Screen.Busy("Connecting to $label…")
+        screen = Screen.Busy(
+            if (retry == null) "Connecting to $label…" else "Connection lost. Reconnecting to $label…",
+        )
         job = viewModelScope.launch {
             try {
                 val (s, used) = openSession(target)
@@ -164,11 +171,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     afterAuthenticated(s, openDeviceID)
                 }
+                this@AppViewModel.retry = null
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                fail(e)
+                if (retry != null) scheduleRetry(retry, e) else fail(e)
             }
+        }
+    }
+
+    private fun scheduleRetry(last: Retry, e: Exception) {
+        Log.i(TAG, "reconnect failed: ${e.message}")
+        session?.close()
+        session = null
+        job = viewModelScope.launch {
+            delay(RETRY_DELAY_MS)
+            connect(last.target, last.deviceID, last)
         }
     }
 
@@ -436,6 +454,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun disconnect() {
         job?.cancel()
         job = null
+        retry = null
         val s = session
         session = null // set first so the close callback is ignored
         s?.close()
@@ -456,9 +475,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun onAppStop() {
-        val ws = hostID
-        val dev = deviceID
-        if (screen == Screen.Keypad && ws != null && dev != null) {
+        // Don't keep retrying in the background: resume the reconnect when the app comes back.
+        val r = retry
+        val ws = if (r != null) r.target.workstationID else hostID
+        val dev = r?.deviceID ?: deviceID
+        if ((screen == Screen.Keypad || r != null) && ws != null && dev != null) {
             resumeTarget = ws to dev
             disconnect()
         }
@@ -510,10 +531,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 job?.cancel()
                 val host = stored.host(hostID)
                 val dev = deviceID
-                // 1000 is a deliberate close (e.g. "Connection replaced" by another client): don't fight it.
-                if (code != 1000 && screen == Screen.Keypad && host != null && dev != null) {
+                val ongoing = retry
+                if (ongoing != null) {
+                    // Dropped again mid-reconnect: keep going.
+                    scheduleRetry(ongoing, SessionException("$code $reason"))
+                    return@onMain
+                }
+                Log.i(TAG, "closed: $code $reason")
+                // Another phone took the device ("Connection replaced"): reconnecting would steal it back.
+                // Any other close, including the desktop app quitting ("kicked from client"), is retried.
+                val replaced = reason.contains("replaced", ignoreCase = true)
+                if (!replaced && screen == Screen.Keypad && host != null && dev != null) {
                     Log.i(TAG, "connection lost ($code $reason), reconnecting")
-                    connect(targetFor(host), openDeviceID = dev)
+                    connect(targetFor(host), dev, Retry(targetFor(host), dev))
                     return@onMain
                 }
                 notice = "Disconnected: $reason"
@@ -631,6 +661,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         const val DEFAULT_DEVICE_NAME = "OpenDeck"
         const val CONNECT_TIMEOUT_MS = 6_000L
+        private const val RETRY_DELAY_MS = 3_000L
         const val MAX_CONNECT_ATTEMPTS = 5
         const val MAX_STORED_ENDPOINTS = 8
         private const val ICON_BATCH_MS = 40L
