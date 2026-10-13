@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,8 +20,24 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew :core:test :app:assembleDebug
+      - name: Decode signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        if: env.KEYSTORE_BASE64 != ''
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      - run: ./gradlew :core:test :app:assembleDebug :app:assembleRelease
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
       - uses: actions/upload-artifact@v4
         with:
           name: opendeck-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.KEYSTORE_FILE != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "opendeck-0.1.$GITHUB_RUN_NUMBER.apk"
+          gh release create "v0.1.$GITHUB_RUN_NUMBER" "opendeck-0.1.$GITHUB_RUN_NUMBER.apk" --target "$GITHUB_SHA" --title "v0.1.$GITHUB_RUN_NUMBER" --generate-notes

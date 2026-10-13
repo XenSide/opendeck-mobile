@@ -15,13 +15,29 @@ android {
         applicationId = "dev.opendeck.mobile"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI run number keeps every published APK newer than the last one
+        val run = System.getenv("GITHUB_RUN_NUMBER")?.toInt() ?: 0
+        versionCode = 1 + run
+        versionName = "0.1.$run"
+    }
+
+    // Same key on every CI release so updates install over the previous version
+    val keystore = System.getenv("KEYSTORE_FILE")
+    signingConfigs {
+        create("release") {
+            if (keystore != null) {
+                storeFile = file(keystore)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = "opendeck"
+                keyPassword = System.getenv("KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (keystore != null) signingConfig = signingConfigs.getByName("release")
         }
     }
 
