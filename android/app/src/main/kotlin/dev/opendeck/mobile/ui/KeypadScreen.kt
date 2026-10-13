@@ -74,6 +74,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import dev.opendeck.core.Layout
 import dev.opendeck.mobile.AppViewModel
+import dev.opendeck.mobile.Duotones
 import dev.opendeck.mobile.StoredDevice
 
 @Composable
