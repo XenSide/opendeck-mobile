@@ -212,6 +212,10 @@ Only when the device is open **and** server protocolVersion ≥ 3, send
 ### 6.2 Rendering [D]
 - Draw icons scaled into each rounded-square key cell on a dark background (so transparent
   black looks black). Keys without an icon render empty.
+- **[D]** The server sends an icon for every key, including keys with no action (normally a solid
+  black image, which §6.1 turns fully transparent). Our clone treats a uniform image that is
+  transparent or near black as "no icon": the cell, its dark background and border are not drawn,
+  so the app's background colour shows through.
 - Visual press feedback: slight shrink/dim while pressed.
 
 ### 6.3 Free-tier layout limit [O]

@@ -2,8 +2,10 @@ package dev.opendeck.core
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CodecsTest {
@@ -48,6 +50,13 @@ class CodecsTest {
         val px = bytes(10, 20, 30, 255, 0, 0, 0, 255, 0, 0, 1, 128)
         IconCodec.bgraToRgba(px)
         assertArrayEquals(bytes(30, 20, 10, 255, 0, 0, 0, 0, 1, 0, 0, 128), px)
+    }
+
+    @Test fun blankIcons() {
+        assertTrue(IconCodec.isBlank(bytes(0, 0, 0, 0, 0, 0, 0, 0)))
+        assertTrue(IconCodec.isBlank(bytes(16, 16, 16, 255, 16, 16, 16, 255)))
+        assertFalse(IconCodec.isBlank(bytes(200, 0, 0, 255, 200, 0, 0, 255))) // solid colour key
+        assertFalse(IconCodec.isBlank(bytes(0, 0, 0, 0, 30, 20, 10, 255)))
     }
 
     @Test fun iconDecodeLz4AndLzf() {

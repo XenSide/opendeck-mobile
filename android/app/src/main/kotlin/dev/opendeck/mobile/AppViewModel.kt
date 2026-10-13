@@ -92,7 +92,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var session: Session? = null
     // Icons are applied in short batches: on a page reload the server first sends a provisional
     // render of every key (e.g. plugins drawing multi-key sliders as single keys), then the final one.
-    private val pendingIcons = mutableMapOf<Int, ImageBitmap>()
+    private val pendingIcons = mutableMapOf<Int, ImageBitmap?>() // null = blank key
     private var iconFlush: Job? = null
     private var lastIconAt = 0L
     private var job: Job? = null
@@ -367,7 +367,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- keypad ----------
 
-    private fun queueIcon(index: Int, image: ImageBitmap) {
+    private fun queueIcon(index: Int, image: ImageBitmap?) {
         pendingIcons[index] = image
         lastIconAt = SystemClock.uptimeMillis()
         if (iconFlush != null) return
@@ -379,7 +379,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 SystemClock.uptimeMillis() - lastIconAt < ICON_QUIET_MS &&
                 SystemClock.uptimeMillis() - start < ICON_MAX_WAIT_MS
             ) delay(ICON_POLL_MS)
-            icons.putAll(pendingIcons)
+            pendingIcons.forEach { (i, img) -> if (img == null) icons.remove(i) else icons[i] = img }
             pendingIcons.clear()
             iconFlush = null
         }
@@ -500,7 +500,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val s = owner ?: return
             when (message) {
                 is ServerMessage.Icon -> {
-                    val bmp = decodeIcon(message) ?: return
+                    val rgba = decodeIcon(message) ?: return
+                    // Keys with no action arrive as an all-black image: show nothing so the background shows through.
+                    if (IconCodec.isBlank(rgba)) return onMain(s) { queueIcon(message.index, null) }
+                    val size = message.image!!.size!!
+                    val bmp = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
+                    bmp.copyPixelsFromBuffer(ByteBuffer.wrap(rgba))
                     // Pressed icons are recognised by their pixels: arrival order vs. release is unreliable.
                     if (hasPressMask(bmp)) fillPressMask(bmp) // reader thread, before the bitmap is shared
                     val image = bmp.asImageBitmap()
@@ -606,17 +611,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun decodeIcon(m: ServerMessage.Icon): Bitmap? {
+    private fun decodeIcon(m: ServerMessage.Icon): ByteArray? {
         val image = m.image ?: return null
         return try {
-            val rgba = IconCodec.decodeToRgba(image) ?: run {
+            IconCodec.decodeToRgba(image) ?: run {
                 Log.d(TAG, "ignoring icon format ${image.format}")
-                return null
+                null
             }
-            val size = image.size!!
-            val bmp = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
-            bmp.copyPixelsFromBuffer(ByteBuffer.wrap(rgba))
-            bmp
         } catch (e: Exception) { // untrusted input: never let a bad icon kill the reader thread
             Log.w(TAG, "bad icon ${m.index}: ${e.message}")
             null

@@ -9,7 +9,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -53,6 +52,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToDown
@@ -274,14 +275,15 @@ private fun KeyCell(size: Dp, gapPercent: Int, shape: Shape, icon: () -> ImageBi
                 alpha = if (pressed) 0.75f else 1f
             }
             .clip(shape)
-            .background(Color(0xFF101010))
             // Icon read in the draw phase: a new icon only redraws, no recomposition or layout.
+            // Keys without an icon draw nothing, so the screen background shows through.
             .drawBehind {
                 val bitmap = icon() ?: return@drawBehind
+                drawRect(Color(0xFF101010))
                 drawImage(bitmap, dstSize = IntSize(this.size.width.roundToInt(), this.size.height.roundToInt()), filterQuality = FilterQuality.Low)
+                // At gap 0 neighbouring borders would show as dividing lines. Stroke is centred on the clip edge: 2dp shows 1dp.
+                if (gapPercent > 0) drawOutline(shape.createOutline(this.size, layoutDirection, this), Color(0xFF2C2C2C), style = Stroke(2.dp.toPx()))
             }
-            // At gap 0 neighbouring borders would show as dividing lines.
-            .then(if (gapPercent > 0) Modifier.border(1.dp, Color(0xFF2C2C2C), shape) else Modifier)
             .semantics { contentDescription = title()?.takeIf { it.isNotBlank() } ?: "Key" },
     )
 }
