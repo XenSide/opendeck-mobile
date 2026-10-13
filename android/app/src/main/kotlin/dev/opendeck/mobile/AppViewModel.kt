@@ -415,6 +415,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         outerCornersOnly = new.outerCornersOnly,
                         powerSave = new.powerSave,
                         dimPercent = new.dimPercent,
+                        backgroundColor = new.backgroundColor,
                     )
                 })
             }
