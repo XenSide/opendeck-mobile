@@ -336,8 +336,9 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
                 Spacer(Modifier.height(8.dp))
                 Text("Background", style = MaterialTheme.typography.labelLarge)
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
-                    (listOf("Black" to 0xFF000000) + Duotones.map { it.name to it.bg }).forEach { (name, argb) ->
-                        Choice(name, selected = argb == background) { background = argb }
+                    Choice("Black", selected = background == 0xFF000000L) { background = 0xFF000000L }
+                    for (d in Duotones) {
+                        Choice(d.name, selected = background == d.bg) { background = d.bg }
                     }
                 }
             }
