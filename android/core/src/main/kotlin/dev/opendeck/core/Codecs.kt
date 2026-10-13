@@ -106,6 +106,17 @@ object IconCodec {
         return raw
     }
 
+    /**
+     * True for the image the server sends for a key with no action: every pixel the same and
+     * transparent or near black (pure black is already transparent after [bgraToRgba]).
+     */
+    fun isBlank(rgba: ByteArray): Boolean {
+        if (rgba.size < 4) return false
+        for (i in 4 until rgba.size) if (rgba[i] != rgba[i % 4]) return false
+        val near = (0..2).all { (rgba[it].toInt() and 0xFF) <= 0x20 }
+        return rgba[3].toInt() == 0 || near
+    }
+
     /** In place: pure black (B=G=R=0) becomes transparent, otherwise swap bytes 0 and 2. */
     fun bgraToRgba(px: ByteArray) {
         var i = 0
