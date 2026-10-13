@@ -1,0 +1,4 @@
+# Release signing key, kept locally and in GitHub secrets only
+signing/
+*.jks
+*.keystore
