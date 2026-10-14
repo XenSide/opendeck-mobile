@@ -14,7 +14,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
@@ -66,6 +65,7 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.isOutOfBounds
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -82,6 +82,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import dev.opendeck.core.Keypad
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -120,27 +121,32 @@ fun KeypadScreen(vm: AppViewModel) {
     val scope = rememberCoroutineScope()
     val minSwipe = with(LocalDensity.current) { MIN_SWIPE.toPx() }
     // Swipe left/right drags the next/previous page in under the finger; down reveals the bar, up hides it.
-    // Works on keys and the space around them. total is the finger's offset since the touch went down.
+    // total is the finger's offset since the touch went down, in screen (not moving grid) coordinates.
     val onDrag: (Offset) -> Unit = { total ->
         if (axis == AXIS_NONE && total.getDistance() >= minSwipe) axis = if (abs(total.x) > abs(total.y)) AXIS_X else AXIS_Y
         if (axis == AXIS_X) {
-            neighborSide = if (total.x < 0) 1 else -1
+            if (total.x != 0f) neighborSide = if (total.x < 0) 1 else -1
             val target = vm.page.current + neighborSide
             // No wrap-around: past the first or last page the drag just resists.
             val inRange = target in 0 until vm.page.total
             neighbor = if (inRange) target else -1
-            scope.launch { pageOffset.snapTo(if (inRange) total.x else total.x / 4) }
+            // Undispatched: the page moves in the same frame as the finger, not one frame behind.
+            scope.launch(start = CoroutineStart.UNDISPATCHED) { pageOffset.snapTo(if (inRange) total.x else total.x / 4) }
         } else if (axis == AXIS_Y) {
             showBar = total.y > 0
             axis = AXIS_DONE
         }
     }
-    val onDragEnd: () -> Unit = {
+    val flingSpeed = with(LocalDensity.current) { FLING_SPEED.toPx() }
+    // velocityX in px/s: a quick flick changes page even when it moved less than COMMIT_FRACTION.
+    val onDragEnd: (Float) -> Unit = { velocityX ->
         if (axis == AXIS_X) {
             val target = neighbor
             scope.launch {
                 val dir = -neighborSide
-                if (target < 0 || abs(pageOffset.value) < width * COMMIT_FRACTION) {
+                val far = abs(pageOffset.value) >= width * COMMIT_FRACTION
+                val flung = velocityX * dir > flingSpeed
+                if (target < 0 || !(far || flung) || velocityX * dir < -flingSpeed) {
                     pageOffset.animateTo(0f, tween(SLIDE_MS))
                     neighbor = -1
                     return@launch
@@ -156,16 +162,31 @@ fun KeypadScreen(vm: AppViewModel) {
         }
         axis = AXIS_NONE
     }
+    // Watches every touch on the Initial pass, before the keys see it, so keys and empty space swipe alike
+    // and the positions don't move with the dragged grid.
     val swipe = Modifier.pointerInput(Unit) {
-        var total = Offset.Zero
-        detectDragGestures(
-            onDragStart = { total = Offset.Zero },
-            onDragEnd = onDragEnd,
-            onDragCancel = onDragEnd,
-        ) { change, delta ->
-            change.consume()
-            total += delta
-            onDrag(total)
+        val slop = viewConfiguration.touchSlop
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            val velocity = VelocityTracker()
+            velocity.addPosition(down.uptimeMillis, down.position)
+            var dragging = false
+            try {
+                while (true) {
+                    val c = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+                    velocity.addPosition(c.uptimeMillis, c.position)
+                    val total = c.position - down.position
+                    if (!dragging && total.getDistance() > slop) {
+                        // Same rule as KeyCell: still within the slop after PRESS_DELAY_MS on a key means a hold, not a swipe.
+                        if (down.isConsumed && c.uptimeMillis - down.uptimeMillis > PRESS_DELAY_MS) break
+                        dragging = true
+                    }
+                    if (dragging) onDrag(total)
+                    if (!c.pressed) break
+                }
+            } finally {
+                if (dragging) onDragEnd(velocity.calculateVelocity().x)
+            }
         }
     }
 
@@ -190,8 +211,6 @@ fun KeypadScreen(vm: AppViewModel) {
             icon = { vm.icons[it] },
             title = { vm.titles[it] },
             onPress = { row, col, pressed -> vm.press(row, col, pressed) },
-            onDrag = onDrag,
-            onDragEnd = onDragEnd,
         )
         if (neighbor >= 0) {
             val cached = vm.cachedPage(neighbor)
@@ -288,6 +307,7 @@ private const val WAKE_MS = 5000L
 // Long enough for a swipe to pass the touch slop, short enough that a hold still feels instant.
 private const val PRESS_DELAY_MS = 120L
 private val MIN_SWIPE = 24.dp
+private val FLING_SPEED = 400.dp // per second
 private const val SLIDE_MS = 160
 // How far (fraction of the screen) a page must be dragged to change on release.
 private const val COMMIT_FRACTION = 0.2f
@@ -316,8 +336,6 @@ private fun KeyGrid(
     icon: (Int) -> ImageBitmap?,
     title: (Int) -> String?,
     onPress: ((Int, Int, Boolean) -> Unit)? = null,
-    onDrag: (Offset) -> Unit = {},
-    onDragEnd: () -> Unit = {},
 ) {
     val layout = device.layout
     BoxWithConstraints(modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
@@ -335,8 +353,6 @@ private fun KeyGrid(
                             icon = { icon(index) },
                             title = { title(index) },
                             onPress = onPress?.let { f -> { pressed: Boolean -> f(row, col, pressed) } },
-                            onDrag = onDrag,
-                            onDragEnd = onDragEnd,
                         )
                     }
                 }
@@ -369,17 +385,13 @@ private fun KeyCell(
     icon: () -> ImageBitmap?,
     title: () -> String?,
     onPress: ((Boolean) -> Unit)?,
-    onDrag: (Offset) -> Unit,
-    onDragEnd: () -> Unit,
 ) {
     var pressed by remember { mutableStateOf(false) }
     val currentOnPress by rememberUpdatedState(onPress ?: { _: Boolean -> })
-    val currentOnDrag by rememberUpdatedState(onDrag)
-    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
     val touch = if (onPress == null) Modifier else Modifier.pointerInput(Unit) {
         awaitEachGesture {
             val down = awaitFirstDown()
-            // Keys consume their touches, so a swipe that starts on a key is handled here, not by the parent.
+            // The page swipe watches touches on the Initial pass, so consuming here doesn't hide them from it.
             down.consume()
             pressed = true
             try {
@@ -409,16 +421,11 @@ private fun KeyCell(
                         }
                     }
                     moved(c) -> {
+                        // A swipe: the page handles it, the key just sends nothing.
                         pressed = false
-                        try {
-                            while (true) {
-                                currentOnDrag(c.position - down.position)
-                                if (!c.pressed) break
-                                c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
-                                c.consume()
-                            }
-                        } finally {
-                            currentOnDragEnd() // also on cancel, so a half-dragged page always settles
+                        while (c.pressed) {
+                            c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                            c.consume()
                         }
                     }
                     !c.pressed -> {
