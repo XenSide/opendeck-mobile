@@ -46,6 +46,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,6 +67,7 @@ import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.isOutOfBounds
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -81,6 +83,7 @@ import dev.opendeck.core.Keypad
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import dev.opendeck.core.Layout
 import dev.opendeck.mobile.AppViewModel
@@ -108,45 +111,61 @@ fun KeypadScreen(vm: AppViewModel) {
             showBar = false
         }
     }
-    // Page slide: the grid's offset as a fraction of its width. Read only in graphicsLayer, so it never recomposes.
-    val slide = remember { Animatable(0f) }
-    var slideDir by remember { mutableIntStateOf(0) } // -1 out to the left, 1 out to the right, 0 idle
+    // Horizontal drag of the page in px. Read only in graphicsLayer, so dragging never recomposes the keys.
+    val pageOffset = remember { Animatable(0f) }
+    var neighbor by remember { mutableIntStateOf(-1) } // page drawn beside the current one, -1 none
+    var neighborSide by remember { mutableIntStateOf(1) } // 1 right of the current page, -1 left
+    var width by remember { mutableIntStateOf(1) }
+    var axis by remember { mutableIntStateOf(AXIS_NONE) }
     val scope = rememberCoroutineScope()
-    // The new page slides in once its icons are released, so the old keys never flash before it.
-    LaunchedEffect(vm.redrawing) {
-        val dir = slideDir
-        if (vm.redrawing) return@LaunchedEffect
-        if (dir != 0) {
-            slide.animateTo(dir.toFloat(), tween(SLIDE_OUT_MS)) // finishes the slide-out if the icons were quicker
-            slide.snapTo(-dir.toFloat())
-            slideDir = 0
+    val minSwipe = with(LocalDensity.current) { MIN_SWIPE.toPx() }
+    // Swipe left/right drags the next/previous page in under the finger; down reveals the bar, up hides it.
+    // Works on keys and the space around them. total is the finger's offset since the touch went down.
+    val onDrag: (Offset) -> Unit = { total ->
+        if (axis == AXIS_NONE && total.getDistance() >= minSwipe) axis = if (abs(total.x) > abs(total.y)) AXIS_X else AXIS_Y
+        if (axis == AXIS_X) {
+            neighborSide = if (total.x < 0) 1 else -1
+            val target = vm.page.current + neighborSide
+            // No wrap-around: past the first or last page the drag just resists.
+            val inRange = target in 0 until vm.page.total
+            neighbor = if (inRange) target else -1
+            scope.launch { pageOffset.snapTo(if (inRange) total.x else total.x / 4) }
+        } else if (axis == AXIS_Y) {
+            showBar = total.y > 0
+            axis = AXIS_DONE
         }
-        // Also settles a slide that a desktop-side page change cut short.
-        slide.animateTo(0f, tween(SLIDE_IN_MS))
     }
-    // Swipe left/right changes page, down reveals the bar, up hides it. Works on keys and the space around them.
-    // Fires once, as soon as the finger has moved MIN_SWIPE, not on lift.
-    val onSwipe: (Offset) -> Unit = { d ->
-        if (abs(d.x) > abs(d.y)) {
-            if (d.x < 0) vm.nextPage() else vm.previousPage()
-            if (vm.page.total > 1) {
-                slideDir = if (d.x < 0) -1 else 1
-                scope.launch { slide.animateTo(slideDir.toFloat(), tween(SLIDE_OUT_MS)) }
+    val onDragEnd: () -> Unit = {
+        if (axis == AXIS_X) {
+            val target = neighbor
+            scope.launch {
+                val dir = -neighborSide
+                if (target < 0 || abs(pageOffset.value) < width * COMMIT_FRACTION) {
+                    pageOffset.animateTo(0f, tween(SLIDE_MS))
+                    neighbor = -1
+                    return@launch
+                }
+                if (dir < 0) vm.nextPage() else vm.previousPage() // sent now, it arrives while the page slides
+                pageOffset.animateTo(dir * width.toFloat(), tween(SLIDE_MS))
+                vm.showCachedPage(target)
+                // Never visited: the neighbour slid in empty, so wait for the desktop's icons before swapping.
+                if (vm.cachedPage(target) == null) snapshotFlow { vm.redrawing }.first { !it }
+                pageOffset.snapTo(0f)
+                neighbor = -1
             }
-        } else {
-            showBar = d.y > 0
         }
+        axis = AXIS_NONE
     }
     val swipe = Modifier.pointerInput(Unit) {
         var total = Offset.Zero
-        var fired = false
-        detectDragGestures(onDragStart = { total = Offset.Zero; fired = false }) { change, delta ->
+        detectDragGestures(
+            onDragStart = { total = Offset.Zero },
+            onDragEnd = onDragEnd,
+            onDragCancel = onDragEnd,
+        ) { change, delta ->
             change.consume()
             total += delta
-            if (!fired && total.getDistance() >= MIN_SWIPE.toPx()) {
-                fired = true
-                onSwipe(total)
-            }
+            onDrag(total)
         }
     }
 
@@ -160,35 +179,28 @@ fun KeypadScreen(vm: AppViewModel) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Color(device.backgroundColor)).then(touchWakes).then(swipe)) {
-        BoxWithConstraints(
-            Modifier.fillMaxSize().padding(8.dp).graphicsLayer {
-                translationX = slide.value * size.width
-                alpha = 1f - abs(slide.value)
-            },
-            contentAlignment = Alignment.Center,
-        ) {
-            // Whole pixels: fractional sizes antialias the key edges into visible seams at gap 0.
-            val cell = with(LocalDensity.current) { minOf(maxWidth / layout.cols, maxHeight / layout.rows).toPx().toInt().toDp() }
-            Column {
-                for (row in 0 until layout.rows) {
-                    Row {
-                        for (col in 0 until layout.cols) {
-                            val index = Keypad.index(row, col, layout.cols)
-                            KeyCell(
-                                size = cell,
-                                gapPercent = device.gapPercent,
-                                shape = keyShape(cell, device, row, col),
-                                // Lambdas: each cell reads its own entry, so one icon update recomposes one cell.
-                                icon = { vm.icons[index] },
-                                title = { vm.titles[index] },
-                                onPress = { pressed -> vm.press(row, col, pressed) },
-                                onSwipe = onSwipe,
-                            )
-                        }
-                    }
-                }
-            }
+    Box(
+        Modifier.fillMaxSize().background(Color(device.backgroundColor)).onSizeChanged { width = it.width }
+            .then(touchWakes).then(swipe),
+    ) {
+        KeyGrid(
+            device,
+            Modifier.graphicsLayer { translationX = pageOffset.value },
+            // Lambdas: each cell reads its own entry, so one icon update recomposes one cell.
+            icon = { vm.icons[it] },
+            title = { vm.titles[it] },
+            onPress = { row, col, pressed -> vm.press(row, col, pressed) },
+            onDrag = onDrag,
+            onDragEnd = onDragEnd,
+        )
+        if (neighbor >= 0) {
+            val cached = vm.cachedPage(neighbor)
+            KeyGrid(
+                device,
+                Modifier.graphicsLayer { translationX = pageOffset.value + neighborSide * size.width },
+                icon = { cached?.get(it) },
+                title = { null },
+            )
         }
         AnimatedVisibility(showBar, enter = slideInVertically { -it }, exit = slideOutVertically { -it }) {
             Row(
@@ -276,8 +288,13 @@ private const val WAKE_MS = 5000L
 // Long enough for a swipe to pass the touch slop, short enough that a hold still feels instant.
 private const val PRESS_DELAY_MS = 120L
 private val MIN_SWIPE = 24.dp
-private const val SLIDE_OUT_MS = 120
-private const val SLIDE_IN_MS = 180
+private const val SLIDE_MS = 160
+// How far (fraction of the screen) a page must be dragged to change on release.
+private const val COMMIT_FRACTION = 0.2f
+private const val AXIS_NONE = 0
+private const val AXIS_X = 1
+private const val AXIS_Y = 2
+private const val AXIS_DONE = 3 // vertical swipe already handled
 
 private val ROTATIONS = listOf(
     "No Lock" to ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
@@ -289,6 +306,43 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+/** The key grid. Without onPress it is a picture only: the page next to the current one during a swipe. */
+@Composable
+private fun KeyGrid(
+    device: StoredDevice,
+    modifier: Modifier,
+    icon: (Int) -> ImageBitmap?,
+    title: (Int) -> String?,
+    onPress: ((Int, Int, Boolean) -> Unit)? = null,
+    onDrag: (Offset) -> Unit = {},
+    onDragEnd: () -> Unit = {},
+) {
+    val layout = device.layout
+    BoxWithConstraints(modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
+        // Whole pixels: fractional sizes antialias the key edges into visible seams at gap 0.
+        val cell = with(LocalDensity.current) { minOf(maxWidth / layout.cols, maxHeight / layout.rows).toPx().toInt().toDp() }
+        Column {
+            for (row in 0 until layout.rows) {
+                Row {
+                    for (col in 0 until layout.cols) {
+                        val index = Keypad.index(row, col, layout.cols)
+                        KeyCell(
+                            size = cell,
+                            gapPercent = device.gapPercent,
+                            shape = keyShape(cell, device, row, col),
+                            icon = { icon(index) },
+                            title = { title(index) },
+                            onPress = onPress?.let { f -> { pressed: Boolean -> f(row, col, pressed) } },
+                            onDrag = onDrag,
+                            onDragEnd = onDragEnd,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 /** With outerCornersOnly, a key rounds just the corners it shares with the whole grid. */
@@ -314,13 +368,15 @@ private fun KeyCell(
     shape: Shape,
     icon: () -> ImageBitmap?,
     title: () -> String?,
-    onPress: (Boolean) -> Unit,
-    onSwipe: (Offset) -> Unit,
+    onPress: ((Boolean) -> Unit)?,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
 ) {
     var pressed by remember { mutableStateOf(false) }
-    val currentOnPress by rememberUpdatedState(onPress)
-    val currentOnSwipe by rememberUpdatedState(onSwipe)
-    val touch = Modifier.pointerInput(Unit) {
+    val currentOnPress by rememberUpdatedState(onPress ?: { _: Boolean -> })
+    val currentOnDrag by rememberUpdatedState(onDrag)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    val touch = if (onPress == null) Modifier else Modifier.pointerInput(Unit) {
         awaitEachGesture {
             val down = awaitFirstDown()
             // Keys consume their touches, so a swipe that starts on a key is handled here, not by the parent.
@@ -354,15 +410,15 @@ private fun KeyCell(
                     }
                     moved(c) -> {
                         pressed = false
-                        var fired = false
-                        while (c.pressed) {
-                            val d = c.position - down.position
-                            if (!fired && d.getDistance() >= MIN_SWIPE.toPx()) {
-                                fired = true
-                                currentOnSwipe(d)
+                        try {
+                            while (true) {
+                                currentOnDrag(c.position - down.position)
+                                if (!c.pressed) break
+                                c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                c.consume()
                             }
-                            c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
-                            c.consume()
+                        } finally {
+                            currentOnDragEnd() // also on cancel, so a half-dragged page always settles
                         }
                     }
                     !c.pressed -> {
