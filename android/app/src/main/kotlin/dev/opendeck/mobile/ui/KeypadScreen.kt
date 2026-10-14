@@ -12,7 +12,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
@@ -49,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
@@ -57,6 +58,7 @@ import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.isOutOfBounds
 import androidx.compose.ui.input.pointer.pointerInput
@@ -73,6 +75,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import dev.opendeck.core.Keypad
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import dev.opendeck.core.Layout
@@ -101,15 +104,25 @@ fun KeypadScreen(vm: AppViewModel) {
             showBar = false
         }
     }
-    // Swipe down anywhere reveals the bar, swipe up hides it.
+    // Swipe left/right changes page, down reveals the bar, up hides it. Works on keys and the space around them.
+    val minSwipe = with(LocalDensity.current) { 24.dp.toPx() }
+    val onSwipe: (Offset) -> Unit = { d ->
+        if (d.getDistance() >= minSwipe) {
+            if (abs(d.x) > abs(d.y)) {
+                if (d.x < 0) vm.nextPage() else vm.previousPage()
+            } else {
+                showBar = d.y > 0
+            }
+        }
+    }
     val swipe = Modifier.pointerInput(Unit) {
-        var total = 0f
-        detectVerticalDragGestures(
-            onDragStart = { total = 0f },
-            onDragEnd = { if (total > 0) showBar = true else if (total < 0) showBar = false },
-        ) { change, dy ->
+        var total = Offset.Zero
+        detectDragGestures(
+            onDragStart = { total = Offset.Zero },
+            onDragEnd = { onSwipe(total) },
+        ) { change, delta ->
             change.consume()
-            total += dy
+            total += delta
         }
     }
 
@@ -143,6 +156,7 @@ fun KeypadScreen(vm: AppViewModel) {
                                 icon = { vm.icons[index] },
                                 title = { vm.titles[index] },
                                 onPress = { pressed -> vm.press(row, col, pressed) },
+                                onSwipe = onSwipe,
                             )
                         }
                     }
@@ -232,6 +246,9 @@ private fun PowerSaveBrightness(enabled: Boolean, dimPercent: Int, wake: IntStat
 
 private const val WAKE_MS = 5000L
 
+// Long enough for a swipe to pass the touch slop, short enough that a hold still feels instant.
+private const val PRESS_DELAY_MS = 120L
+
 private val ROTATIONS = listOf(
     "No Lock" to ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
     "Lock Landscape" to ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
@@ -261,26 +278,66 @@ private fun keyShape(size: Dp, device: StoredDevice, row: Int, col: Int): Shape 
 }
 
 @Composable
-private fun KeyCell(size: Dp, gapPercent: Int, shape: Shape, icon: () -> ImageBitmap?, title: () -> String?, onPress: (Boolean) -> Unit) {
+private fun KeyCell(
+    size: Dp,
+    gapPercent: Int,
+    shape: Shape,
+    icon: () -> ImageBitmap?,
+    title: () -> String?,
+    onPress: (Boolean) -> Unit,
+    onSwipe: (Offset) -> Unit,
+) {
     var pressed by remember { mutableStateOf(false) }
     val currentOnPress by rememberUpdatedState(onPress)
+    val currentOnSwipe by rememberUpdatedState(onSwipe)
     val touch = Modifier.pointerInput(Unit) {
         awaitEachGesture {
             val down = awaitFirstDown()
-            // Keys consume their touches, so the bar swipe only starts from the empty space around the grid.
+            // Keys consume their touches, so a swipe that starts on a key is handled here, not by the parent.
             down.consume()
             pressed = true
-            currentOnPress(true)
             try {
-                while (true) {
-                    val c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
-                    c.consume()
-                    if (!c.pressed || c.isOutOfBounds(this@pointerInput.size, extendedTouchPadding)) break
+                val slop = viewConfiguration.touchSlop
+                fun moved(c: PointerInputChange) = (c.position - down.position).getDistance() > slop
+                var c: PointerInputChange = down
+                // The press is held back until the touch is a tap (up) or a hold (timeout), so a swipe sends nothing.
+                val hold = withTimeoutOrNull(PRESS_DELAY_MS) {
+                    while (c.pressed && !moved(c)) {
+                        c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                        c.consume()
+                    }
+                    false
+                } ?: true
+                when {
+                    hold -> {
+                        currentOnPress(true)
+                        try {
+                            while (true) {
+                                val e = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                e.consume()
+                                if (!e.pressed || e.isOutOfBounds(this@pointerInput.size, extendedTouchPadding)) break
+                            }
+                        } finally {
+                            // Release on up, on slide-off and on disposal, so keys never stick.
+                            currentOnPress(false)
+                        }
+                    }
+                    moved(c) -> {
+                        pressed = false
+                        while (c.pressed) {
+                            c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
+                            c.consume()
+                        }
+                        currentOnSwipe(c.position - down.position)
+                    }
+                    !c.pressed -> {
+                        currentOnPress(true)
+                        currentOnPress(false)
+                    }
+                    // else: the pointer was cancelled before deciding, so nothing is sent.
                 }
             } finally {
-                // Release on up, on slide-off and on disposal, so keys never stick.
                 pressed = false
-                currentOnPress(false)
             }
         }
     }
