@@ -1,5 +1,6 @@
 package dev.opendeck.mobile
 
+import android.content.pm.ActivityInfo
 import android.util.Log
 import dev.opendeck.core.CryptoBox
 import dev.opendeck.core.Hex
@@ -27,6 +28,8 @@ data class StoredDevice(
     val dimPercent: Int = 25,
     /** Keypad background, ARGB. Defaults to the blue of the Duotone key style. */
     val backgroundColor: Long = DuotoneBlue.bg,
+    /** Keypad orientation, an ActivityInfo.SCREEN_ORIENTATION_* value. */
+    val rotationLock: Int = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
 ) {
     val layout: Layout get() = Layout(cols, rows)
 }
