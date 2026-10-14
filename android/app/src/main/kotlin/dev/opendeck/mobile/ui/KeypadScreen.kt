@@ -6,6 +6,8 @@ import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
@@ -43,6 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -78,6 +81,7 @@ import dev.opendeck.core.Keypad
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import dev.opendeck.core.Layout
 import dev.opendeck.mobile.AppViewModel
 import dev.opendeck.mobile.Duotones
@@ -104,25 +108,45 @@ fun KeypadScreen(vm: AppViewModel) {
             showBar = false
         }
     }
+    // Page slide: the grid's offset as a fraction of its width. Read only in graphicsLayer, so it never recomposes.
+    val slide = remember { Animatable(0f) }
+    var slideDir by remember { mutableIntStateOf(0) } // -1 out to the left, 1 out to the right, 0 idle
+    val scope = rememberCoroutineScope()
+    // The new page slides in once its icons are released, so the old keys never flash before it.
+    LaunchedEffect(vm.redrawing) {
+        val dir = slideDir
+        if (vm.redrawing) return@LaunchedEffect
+        if (dir != 0) {
+            slide.animateTo(dir.toFloat(), tween(SLIDE_OUT_MS)) // finishes the slide-out if the icons were quicker
+            slide.snapTo(-dir.toFloat())
+            slideDir = 0
+        }
+        // Also settles a slide that a desktop-side page change cut short.
+        slide.animateTo(0f, tween(SLIDE_IN_MS))
+    }
     // Swipe left/right changes page, down reveals the bar, up hides it. Works on keys and the space around them.
-    val minSwipe = with(LocalDensity.current) { 24.dp.toPx() }
+    // Fires once, as soon as the finger has moved MIN_SWIPE, not on lift.
     val onSwipe: (Offset) -> Unit = { d ->
-        if (d.getDistance() >= minSwipe) {
-            if (abs(d.x) > abs(d.y)) {
-                if (d.x < 0) vm.nextPage() else vm.previousPage()
-            } else {
-                showBar = d.y > 0
+        if (abs(d.x) > abs(d.y)) {
+            if (d.x < 0) vm.nextPage() else vm.previousPage()
+            if (vm.page.total > 1) {
+                slideDir = if (d.x < 0) -1 else 1
+                scope.launch { slide.animateTo(slideDir.toFloat(), tween(SLIDE_OUT_MS)) }
             }
+        } else {
+            showBar = d.y > 0
         }
     }
     val swipe = Modifier.pointerInput(Unit) {
         var total = Offset.Zero
-        detectDragGestures(
-            onDragStart = { total = Offset.Zero },
-            onDragEnd = { onSwipe(total) },
-        ) { change, delta ->
+        var fired = false
+        detectDragGestures(onDragStart = { total = Offset.Zero; fired = false }) { change, delta ->
             change.consume()
             total += delta
+            if (!fired && total.getDistance() >= MIN_SWIPE.toPx()) {
+                fired = true
+                onSwipe(total)
+            }
         }
     }
 
@@ -138,7 +162,10 @@ fun KeypadScreen(vm: AppViewModel) {
 
     Box(Modifier.fillMaxSize().background(Color(device.backgroundColor)).then(touchWakes).then(swipe)) {
         BoxWithConstraints(
-            Modifier.fillMaxSize().padding(8.dp),
+            Modifier.fillMaxSize().padding(8.dp).graphicsLayer {
+                translationX = slide.value * size.width
+                alpha = 1f - abs(slide.value)
+            },
             contentAlignment = Alignment.Center,
         ) {
             // Whole pixels: fractional sizes antialias the key edges into visible seams at gap 0.
@@ -248,6 +275,9 @@ private const val WAKE_MS = 5000L
 
 // Long enough for a swipe to pass the touch slop, short enough that a hold still feels instant.
 private const val PRESS_DELAY_MS = 120L
+private val MIN_SWIPE = 24.dp
+private const val SLIDE_OUT_MS = 120
+private const val SLIDE_IN_MS = 180
 
 private val ROTATIONS = listOf(
     "No Lock" to ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
@@ -324,11 +354,16 @@ private fun KeyCell(
                     }
                     moved(c) -> {
                         pressed = false
+                        var fired = false
                         while (c.pressed) {
+                            val d = c.position - down.position
+                            if (!fired && d.getDistance() >= MIN_SWIPE.toPx()) {
+                                fired = true
+                                currentOnSwipe(d)
+                            }
                             c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
                             c.consume()
                         }
-                        currentOnSwipe(c.position - down.position)
                     }
                     !c.pressed -> {
                         currentOnPress(true)

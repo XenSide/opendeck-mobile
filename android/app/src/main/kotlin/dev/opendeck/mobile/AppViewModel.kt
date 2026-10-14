@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -95,7 +96,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // (e.g. plugins drawing multi-key sliders as single keys), then the final one.
     private val pendingIcons = mutableMapOf<Int, ImageBitmap?>() // null = blank key
     private var iconFlush: Job? = null
-    private var redrawStart = -1L // -1 = not in a redraw
+    private var redrawStart by mutableLongStateOf(-1L) // -1 = not in a redraw
+    /** True while a page redraw holds new icons back; the keypad slides the new page in when it ends. */
+    val redrawing: Boolean get() = redrawStart >= 0
     private var job: Job? = null
     // Cold start reopens the last used computer and device.
     private var resumeTarget: Pair<String, String>? =
