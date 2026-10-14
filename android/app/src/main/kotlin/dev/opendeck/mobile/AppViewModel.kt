@@ -90,11 +90,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     private var session: Session? = null
-    // Icons are applied in short batches: on a page reload the server first sends a provisional
-    // render of every key (e.g. plugins drawing multi-key sliders as single keys), then the final one.
+    // Icons show as soon as they arrive. Only during a page redraw (page/device/layout change) are they
+    // held until the burst goes quiet: the server first sends a provisional render of every key
+    // (e.g. plugins drawing multi-key sliders as single keys), then the final one.
     private val pendingIcons = mutableMapOf<Int, ImageBitmap?>() // null = blank key
     private var iconFlush: Job? = null
-    private var lastIconAt = 0L
+    private var redrawStart = -1L // -1 = not in a redraw
     private var job: Job? = null
     // Cold start reopens the last used computer and device.
     private var resumeTarget: Pair<String, String>? =
@@ -377,19 +378,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- keypad ----------
 
     private fun queueIcon(index: Int, image: ImageBitmap?) {
+        if (redrawStart < 0) {
+            if (image == null) icons.remove(index) else icons[index] = image
+            return
+        }
         pendingIcons[index] = image
-        lastIconAt = SystemClock.uptimeMillis()
-        if (iconFlush != null) return
+        // Each icon restarts the quiet timer, capped so a constantly animating key can't hold the page.
+        val left = ICON_MAX_WAIT_MS - (SystemClock.uptimeMillis() - redrawStart)
+        scheduleIconFlush(minOf(ICON_QUIET_MS, left))
+    }
+
+    /** Called on events that redraw every key, before or as their icons arrive. */
+    private fun beginRedraw() {
+        if (redrawStart >= 0) return
+        redrawStart = SystemClock.uptimeMillis()
+        scheduleIconFlush(ICON_MAX_WAIT_MS) // ends the hold even if no icon comes
+    }
+
+    private fun scheduleIconFlush(delayMs: Long) {
+        iconFlush?.cancel()
         iconFlush = viewModelScope.launch {
-            val start = SystemClock.uptimeMillis()
-            delay(ICON_BATCH_MS)
-            // Many keys at once = a page redraw: wait for it to settle and show only the final state.
-            while (pendingIcons.size >= PAGE_REDRAW_KEYS &&
-                SystemClock.uptimeMillis() - lastIconAt < ICON_QUIET_MS &&
-                SystemClock.uptimeMillis() - start < ICON_MAX_WAIT_MS
-            ) delay(ICON_POLL_MS)
+            delay(delayMs)
             pendingIcons.forEach { (i, img) -> if (img == null) icons.remove(i) else icons[i] = img }
             pendingIcons.clear()
+            redrawStart = -1L
             iconFlush = null
         }
     }
@@ -397,8 +409,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun clearIcons() {
         iconFlush?.cancel()
         iconFlush = null
+        redrawStart = -1L
         pendingIcons.clear()
         icons.clear()
+        beginRedraw()
     }
 
     fun press(row: Int, col: Int, pressed: Boolean) {
@@ -407,10 +421,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun nextPage() {
+        beginRedraw()
         session?.nextPage()
     }
 
     fun previousPage() {
+        beginRedraw()
         session?.previousPage()
     }
 
@@ -523,6 +539,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     onMain(s) { queueIcon(message.index, image) }
                 }
                 is ServerMessage.Context -> onMain(s) {
+                    beginRedraw() // a full context means a page or profile switch, also ones made on the desktop
                     // The server first sends a placeholder context with page fields = 0xFFFFFFFF.
                     page = if (message.totalPages > 0) PageInfo(message.currentPage, message.totalPages) else PageInfo(0, 0)
                     titles.clear()
@@ -676,11 +693,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val RETRY_DELAY_MS = 3_000L
         const val MAX_CONNECT_ATTEMPTS = 5
         const val MAX_STORED_ENDPOINTS = 8
-        private const val ICON_BATCH_MS = 40L
-        private const val PAGE_REDRAW_KEYS = 3
         private const val ICON_QUIET_MS = 120L
         private const val ICON_MAX_WAIT_MS = 500L
-        private const val ICON_POLL_MS = 20L
         private const val PRESS_MASK_FRACTION = 22f / 144f
         private const val PRESS_MASK_RIM = 3f
         val ICON_SIZES = listOf(72, 96, 144, 192)
