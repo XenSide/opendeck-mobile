@@ -96,8 +96,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // (e.g. plugins drawing multi-key sliders as single keys), then the final one.
     private val pendingIcons = mutableMapOf<Int, ImageBitmap?>() // null = blank key
     private var iconFlush: Job? = null
+    // Each visited page's icons, so a swipe can show the next page under the finger before the desktop sends it.
+    private val pageCache = mutableMapOf<Pair<String?, Int>, Map<Int, ImageBitmap>>()
+    private var profileID: String? = null
     private var redrawStart by mutableLongStateOf(-1L) // -1 = not in a redraw
-    /** True while a page redraw holds new icons back; the keypad slides the new page in when it ends. */
+    /** True while a page redraw holds new icons back. A swipe to a page not yet seen waits for it to end. */
     val redrawing: Boolean get() = redrawStart >= 0
     private var job: Job? = null
     // Cold start reopens the last used computer and device.
@@ -402,8 +405,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         iconFlush?.cancel()
         iconFlush = viewModelScope.launch {
             delay(delayMs)
+            val fresh = pendingIcons.isNotEmpty()
             pendingIcons.forEach { (i, img) -> if (img == null) icons.remove(i) else icons[i] = img }
             pendingIcons.clear()
+            // The desktop sends the context before the icons, so page is already the one they belong to.
+            if (fresh && page.total > 0) pageCache[profileID to page.current] = icons.toMap()
             redrawStart = -1L
             iconFlush = null
         }
@@ -415,7 +421,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         redrawStart = -1L
         pendingIcons.clear()
         icons.clear()
+        pageCache.clear() // a new device or layout puts different icons at each index
         beginRedraw()
+    }
+
+    /** The icons [page] had when last shown, or null if it hasn't been shown since connecting. */
+    fun cachedPage(page: Int): Map<Int, ImageBitmap>? = pageCache[profileID to page]
+
+    /** After a swipe lands: shows [page]'s remembered icons until the desktop's own arrive. */
+    fun showCachedPage(page: Int) {
+        if (!redrawing) return // the desktop's icons are already up
+        val cached = cachedPage(page) ?: return
+        icons.clear()
+        icons.putAll(cached)
     }
 
     fun press(row: Int, col: Int, pressed: Boolean) {
@@ -545,6 +563,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     beginRedraw() // a full context means a page or profile switch, also ones made on the desktop
                     // The server first sends a placeholder context with page fields = 0xFFFFFFFF.
                     page = if (message.totalPages > 0) PageInfo(message.currentPage, message.totalPages) else PageInfo(0, 0)
+                    profileID = message.profileID
                     titles.clear()
                     message.actions.forEach { titles[it.index] = it.title }
                 }
