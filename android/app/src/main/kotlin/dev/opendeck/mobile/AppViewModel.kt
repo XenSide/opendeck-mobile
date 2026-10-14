@@ -166,12 +166,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 hostID = hello.workstationID
                 rememberHost(target, hello, used)
                 if (s.state.value == SessionState.Unauthenticated) {
+                    this@AppViewModel.retry = null // pairing needs the user, stop retrying
                     save { st -> st.withHost(hello.workstationID) { it.copy(isAuthenticated = false) } }
                     screen = Screen.Pairing(waiting = false)
                 } else {
+                    // A retry ends only once the device is open again (openDevice/enterKeypad clear it).
                     afterAuthenticated(s, openDeviceID)
                 }
-                this@AppViewModel.retry = null
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -245,6 +246,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         var list = s.awaitDeviceList()
         save { st -> st.withHost(ws) { it.copy(isAuthenticated = true) } }
         mergeDevices(ws, list)
+        // While the computer is shutting down or booting, the server can answer before the device exists:
+        // keep retrying instead of creating a new device or dropping to the device list.
+        if (retry != null && list.none { it.id == openDeviceID }) throw SessionException("device not available yet")
         if (list.isEmpty()) {
             val config = Keypad.keypadConfig(Keypad.DEFAULT_LAYOUT, Keypad.DEFAULT_ICON_SIZE)
             // Creating also opens the device on this connection (verified live).
@@ -323,6 +327,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         page = PageInfo(0, 0)
         deviceID = device.id
         save { it.copy(lastHostID = ws, lastDeviceID = device.id) }
+        retry = null
         screen = Screen.Keypad
     }
 
@@ -351,11 +356,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 s.openDevice(id, Keypad.keypadConfig(dev.layout, dev.iconSize))
                 deviceID = id
                 save { it.copy(lastHostID = ws, lastDeviceID = id) }
+                retry = null
                 screen = Screen.Keypad
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (s.state.value == SessionState.Closed) {
+                val ongoing = retry
+                if (ongoing != null) {
+                    scheduleRetry(ongoing, e)
+                } else if (s.state.value == SessionState.Closed) {
                     fail(e)
                 } else {
                     notice = describe(e)
@@ -471,7 +480,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val (ws, dev) = resumeTarget ?: return
         resumeTarget = null
         val host = stored.host(ws) ?: return
-        connect(targetFor(host), openDeviceID = dev)
+        // Resume as a retry: the computer may still be off (or booting) when the app comes back.
+        connect(targetFor(host), dev, Retry(targetFor(host), dev))
     }
 
     fun onAppStop() {
