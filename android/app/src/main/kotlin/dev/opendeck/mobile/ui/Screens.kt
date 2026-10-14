@@ -1,5 +1,9 @@
 package dev.opendeck.mobile.ui
 
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -33,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -91,6 +96,9 @@ private fun HostsScreen(vm: AppViewModel) {
         onDispose { vm.stopDiscovery() }
     }
     var showAdd by remember { mutableStateOf(false) }
+    var showApps by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val isHome = remember { context.isDefaultHome() }
     val saved = vm.stored.hosts
     val online = vm.discovered.map { it.workstationID }.toSet()
     val extra = vm.discovered.filter { d -> saved.none { it.workstationID == d.workstationID } }
@@ -128,7 +136,9 @@ private fun HostsScreen(vm: AppViewModel) {
             }
         }
         Button(onClick = { showAdd = true }, modifier = Modifier.fillMaxWidth()) { Text("Add host") }
+        if (isHome) OutlinedButton(onClick = { showApps = true }, modifier = Modifier.fillMaxWidth()) { Text("Apps") }
     }
+    if (showApps) AppsDialog(onDismiss = { showApps = false })
     if (showAdd) {
         TextInputDialog(
             title = "Add host",
@@ -139,6 +149,42 @@ private fun HostsScreen(vm: AppViewModel) {
             onSubmit = { text -> vm.addHost(text).also { if (it == null) showAdd = false } },
         )
     }
+}
+
+private fun Context.isDefaultHome(): Boolean =
+    packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), PackageManager.MATCH_DEFAULT_ONLY)
+        ?.activityInfo?.packageName == packageName
+
+/** App drawer for when OpenDeck is the home app, so the phone is never trapped in it. */
+@Composable
+private fun AppsDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val apps = remember {
+        val pm = context.packageManager
+        pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+            .filter { it.activityInfo.packageName != context.packageName }
+            .map { it.loadLabel(pm).toString() to it.activityInfo }
+            .sortedBy { it.first.lowercase() }
+    }
+    fun launch(intent: Intent) {
+        onDismiss()
+        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Apps") },
+        text = {
+            LazyColumn {
+                item { ListRow("Home app settings", "Switch back to another launcher") { launch(Intent(Settings.ACTION_HOME_SETTINGS)) } }
+                items(apps, key = { it.second.packageName + "/" + it.second.name }) { (label, info) ->
+                    ListRow(label, info.packageName) {
+                        launch(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setClassName(info.packageName, info.name))
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
 }
 
 @Composable
