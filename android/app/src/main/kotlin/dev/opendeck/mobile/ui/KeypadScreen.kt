@@ -61,6 +61,7 @@ import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.isOutOfBounds
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
@@ -85,6 +86,9 @@ fun KeypadScreen(vm: AppViewModel) {
     val layout = device.layout
     var showLayout by remember { mutableStateOf(false) }
     var showBar by remember { mutableStateOf(false) }
+    var showApps by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val isHome = remember { context.isDefaultHome() }
     // Written on touch, read only inside PowerSaveBrightness so a tap doesn't recompose the grid.
     val wake = remember { mutableIntStateOf(0) }
     ImmersiveKeepAwake()
@@ -154,6 +158,7 @@ fun KeypadScreen(vm: AppViewModel) {
                 Text("Page ${vm.page.label}", color = Color.White)
                 TextButton(onClick = { vm.nextPage() }) { Text("Next ›") }
                 Spacer(Modifier.weight(1f))
+                if (isHome) TextButton(onClick = { showApps = true }) { Text("Apps") }
                 TextButton(onClick = { showLayout = true }) { Text("Layout") }
                 TextButton(onClick = { vm.back() }) { Text("Devices") }
                 TextButton(onClick = { vm.disconnect() }) { Text("Disconnect") }
@@ -161,6 +166,7 @@ fun KeypadScreen(vm: AppViewModel) {
         }
     }
 
+    if (showApps) AppsDialog(onDismiss = { showApps = false })
     if (showLayout) {
         LayoutDialog(
             current = device,

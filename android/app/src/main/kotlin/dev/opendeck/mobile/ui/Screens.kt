@@ -151,13 +151,13 @@ private fun HostsScreen(vm: AppViewModel) {
     }
 }
 
-private fun Context.isDefaultHome(): Boolean =
+internal fun Context.isDefaultHome(): Boolean =
     packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), PackageManager.MATCH_DEFAULT_ONLY)
         ?.activityInfo?.packageName == packageName
 
 /** App drawer for when OpenDeck is the home app, so the phone is never trapped in it. */
 @Composable
-private fun AppsDialog(onDismiss: () -> Unit) {
+internal fun AppsDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val apps = remember {
         val pm = context.packageManager
