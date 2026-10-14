@@ -5,7 +5,13 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,6 +46,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.ui.unit.dp
 import dev.opendeck.mobile.AppViewModel
 import dev.opendeck.mobile.Screen
@@ -159,8 +169,8 @@ internal fun Context.isDefaultHome(): Boolean =
 @Composable
 internal fun AppsDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
+    val pm = context.packageManager
     val apps = remember {
-        val pm = context.packageManager
         pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
             .filter { it.activityInfo.packageName != context.packageName }
             .map { it.loadLabel(pm).toString() to it.activityInfo }
@@ -172,13 +182,34 @@ internal fun AppsDialog(onDismiss: () -> Unit) {
     }
     AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = Modifier.fillMaxWidth(0.92f),
+        properties = DialogProperties(usePlatformDefaultWidth = false),
         title = { Text("Apps") },
         text = {
-            LazyColumn {
-                item { ListRow("Home app settings", "Switch back to another launcher") { launch(Intent(Settings.ACTION_HOME_SETTINGS)) } }
+            LazyVerticalGrid(GridCells.Fixed(4)) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    ListRow("Home app settings", "Switch back to another launcher") { launch(Intent(Settings.ACTION_HOME_SETTINGS)) }
+                }
                 items(apps, key = { it.second.packageName + "/" + it.second.name }) { (label, info) ->
-                    ListRow(label, info.packageName) {
-                        launch(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setClassName(info.packageName, info.name))
+                    // Loaded per visible cell, so opening the drawer doesn't decode every icon up front.
+                    val icon = remember(info) { info.loadIcon(pm).toBitmap(144, 144).asImageBitmap() }
+                    Column(
+                        Modifier
+                            .clickable {
+                                launch(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setClassName(info.packageName, info.name))
+                            }
+                            .padding(vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Image(icon, contentDescription = null, modifier = Modifier.size(48.dp))
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
                     }
                 }
             }
