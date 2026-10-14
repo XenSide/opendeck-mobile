@@ -443,6 +443,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         powerSave = new.powerSave,
                         dimPercent = new.dimPercent,
                         backgroundColor = new.backgroundColor,
+                        rotationLock = new.rotationLock,
                     )
                 })
             }

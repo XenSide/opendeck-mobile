@@ -3,6 +3,7 @@ package dev.opendeck.mobile.ui
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
@@ -87,6 +88,7 @@ fun KeypadScreen(vm: AppViewModel) {
     // Written on touch, read only inside PowerSaveBrightness so a tap doesn't recompose the grid.
     val wake = remember { mutableIntStateOf(0) }
     ImmersiveKeepAwake()
+    RotationLock(device.rotationLock)
     PowerSaveBrightness(device.powerSave, device.dimPercent, wake)
     // Auto-hide; changing page restarts the countdown.
     LaunchedEffect(showBar, vm.page) {
@@ -190,6 +192,16 @@ private fun ImmersiveKeepAwake() {
     }
 }
 
+/** Applies the device's orientation while the keypad is visible; other screens rotate freely. */
+@Composable
+private fun RotationLock(orientation: Int) {
+    val activity = LocalView.current.context.findActivity() ?: return
+    DisposableEffect(activity, orientation) {
+        activity.requestedOrientation = orientation
+        onDispose { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+    }
+}
+
 /** Window-only brightness (no permission needed); the system value returns when the keypad closes. */
 @Composable
 private fun PowerSaveBrightness(enabled: Boolean, dimPercent: Int, wake: IntState) {
@@ -213,6 +225,12 @@ private fun PowerSaveBrightness(enabled: Boolean, dimPercent: Int, wake: IntStat
 }
 
 private const val WAKE_MS = 5000L
+
+private val ROTATIONS = listOf(
+    "No Lock" to ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
+    "Lock Landscape" to ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
+    "Lock Portrait" to ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT,
+)
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -299,6 +317,7 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
     var powerSave by remember { mutableStateOf(current.powerSave) }
     var dim by remember { mutableIntStateOf(current.dimPercent) }
     var background by remember { mutableStateOf(current.backgroundColor) }
+    var rotation by remember { mutableIntStateOf(current.rotationLock) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Layout") },
@@ -344,12 +363,18 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
                         Choice(d.name, selected = background == d.bg) { background = d.bg }
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Text("Rotation", style = MaterialTheme.typography.labelLarge)
+                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                    for ((label, value) in ROTATIONS) Choice(label, selected = rotation == value) { rotation = value }
+                }
             }
         },
         confirmButton = { TextButton(onClick = { onApply(
                         current.copy(
                             cols = cols, rows = rows, iconSize = iconSize, gapPercent = gap, cornerPercent = corner,
                             outerCornersOnly = outerOnly, powerSave = powerSave, dimPercent = dim, backgroundColor = background,
+                            rotationLock = rotation,
                         ),
                     ) }) { Text("Apply") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
