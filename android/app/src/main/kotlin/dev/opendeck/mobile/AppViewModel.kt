@@ -39,8 +39,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import java.io.File
+import java.net.InetAddress
+import java.net.Socket
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
 import kotlin.math.ceil
 import kotlin.math.sqrt
 
@@ -57,6 +60,22 @@ data class PageInfo(val current: Int, val total: Int) {
     val label: String get() = if (total <= 0) "–" else "${current + 1}/$total"
 }
 
+/**
+ * Key presses are tiny frames. With Nagle on, the release waits for the computer's ACK of the press (often
+ * 200-600 ms on phone Wi-Fi), and plugins that repeat while a key is held turn that into extra steps.
+ */
+private object NoDelaySockets : SocketFactory() {
+    private val base = getDefault()
+    private fun Socket.noDelay() = apply { tcpNoDelay = true }
+    override fun createSocket(): Socket = base.createSocket().noDelay()
+    override fun createSocket(host: String, port: Int): Socket = base.createSocket(host, port).noDelay()
+    override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int): Socket =
+        base.createSocket(host, port, localHost, localPort).noDelay()
+    override fun createSocket(host: InetAddress, port: Int): Socket = base.createSocket(host, port).noDelay()
+    override fun createSocket(host: InetAddress, port: Int, localHost: InetAddress, localPort: Int): Socket =
+        base.createSocket(host, port, localHost, localPort).noDelay()
+}
+
 /** A host to connect to. workstationID is null for manual entry (learned from the hello). */
 data class HostTarget(val workstationID: String?, val name: String, val endpoints: List<Endpoint>)
 
@@ -68,6 +87,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // Liveness: a missing pong fails the socket within ~2 intervals. Looser than spec §2's 10 s
         // because phone Wi-Fi power saving delays pongs; drops are auto-reconnected anyway.
         .pingInterval(15, TimeUnit.SECONDS)
+        .socketFactory(NoDelaySockets)
         .build()
 
     val pairingCode: String = CryptoBox.pairingCode(keyPair.publicKey)
