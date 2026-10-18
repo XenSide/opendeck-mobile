@@ -1,3 +1,5 @@
+![OpenDeck Mobile](docs/cover.png)
+
 # OpenDeck Mobile
 
 OpenDeck Mobile is an independent Android app that works as a virtual Stream Deck keypad. It
@@ -7,6 +9,8 @@ presses back to the desktop.
 
 It is not affiliated with or endorsed by Elgato or Corsair. "Stream Deck" is a trademark of its
 owner and is used here only to describe what the app interoperates with.
+
+![OpenDeck Mobile keypad](docs/keypad.png)
 
 ## Clean-room process
 
