@@ -1,3 +1,5 @@
+![OpenDeck Mobile](docs/cover.png)
+
 # OpenDeck Mobile
 
 OpenDeck Mobile is an independent Android app that works as a virtual Stream Deck keypad. It
