@@ -154,3 +154,6 @@ literally.
 - Fake server in `SessionTest` updated to mirror these behaviours; added `deviceNameClash` test.
 - `LiveProbeTest` (skipped unless `VSD2_LIVE` is set) drives a real desktop:
   `VSD2_LIVE=ws://127.0.0.1:28198 VSD2_STEP=hello|pair|open [VSD2_ICON_DIR=dir] ./gradlew :core:cleanTest :core:test --tests '*LiveProbe*' -i`
+- A newly paired phone always creates its own device ("OpenDeck (<phone name>)" when others
+  exist) instead of offering the existing ones: the desktop gives a device to one connection
+  only, so a second phone opening the first phone's device disconnects it ("Connection replaced").

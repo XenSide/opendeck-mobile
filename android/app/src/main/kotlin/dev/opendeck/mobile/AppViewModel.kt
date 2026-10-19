@@ -267,7 +267,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun afterAuthenticated(s: Session, openDeviceID: String?) {
+    private suspend fun afterAuthenticated(s: Session, openDeviceID: String?, justPaired: Boolean = false) {
         val ws = s.serverHello!!.workstationID
         screen = Screen.Busy("Loading devices…")
         var list = s.awaitDeviceList()
@@ -276,10 +276,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // While the computer is shutting down or booting, the server can answer before the device exists:
         // keep retrying instead of creating a new device or dropping to the device list.
         if (retry != null && list.none { it.id == openDeviceID }) throw SessionException("device not available yet")
-        if (list.isEmpty()) {
+        // A newly paired phone gets its own device: the computer gives each device to one connection only,
+        // so opening another phone's device would disconnect that phone ("Connection replaced").
+        if (list.isEmpty() || justPaired) {
             val config = Keypad.keypadConfig(Keypad.DEFAULT_LAYOUT, Keypad.DEFAULT_ICON_SIZE)
+            val name = if (list.isEmpty()) DEFAULT_DEVICE_NAME else "$DEFAULT_DEVICE_NAME (${clientInfo().name})"
             // Creating also opens the device on this connection (verified live).
-            val created = s.createDevice(DEFAULT_DEVICE_NAME, config, skipUniquenessOfNameValidation = true)
+            val created = s.createDevice(name, config, skipUniquenessOfNameValidation = true)
             if (created != null) {
                 enterKeypad(ws, created)
                 return
@@ -306,7 +309,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         job = viewModelScope.launch {
             try {
                 s.authenticate()
-                afterAuthenticated(s, null)
+                afterAuthenticated(s, null, justPaired = true)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
