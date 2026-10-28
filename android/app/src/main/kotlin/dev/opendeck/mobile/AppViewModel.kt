@@ -504,6 +504,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         dimPercent = new.dimPercent,
                         backgroundColor = new.backgroundColor,
                         rotationLock = new.rotationLock,
+                        homeAssistantButton = new.homeAssistantButton,
                     )
                 })
             }
