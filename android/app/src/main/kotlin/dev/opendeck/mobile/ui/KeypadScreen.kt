@@ -3,6 +3,7 @@ package dev.opendeck.mobile.ui
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.compose.animation.AnimatedVisibility
@@ -230,6 +231,7 @@ fun KeypadScreen(vm: AppViewModel) {
                 Text("Page ${vm.page.label}", color = Color.White)
                 TextButton(onClick = { vm.nextPage() }) { Text("Next ›") }
                 Spacer(Modifier.weight(1f))
+                if (device.homeAssistantButton) TextButton(onClick = { vm.notice = context.openHomeAssistant() }) { Text("Home Assistant") }
                 if (isHome) TextButton(onClick = { showApps = true }) { Text("Apps") }
                 TextButton(onClick = { showLayout = true }) { Text("Layout") }
                 TextButton(onClick = { vm.back() }) { Text("Devices") }
@@ -321,6 +323,17 @@ private val ROTATIONS = listOf(
     "Lock Landscape" to ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
     "Lock Portrait" to ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT,
 )
+
+// The full and the minimal (no Google services) builds of the Home Assistant companion app.
+private val HOME_ASSISTANT_PACKAGES = listOf("io.homeassistant.companion.android", "io.homeassistant.companion.android.minimal")
+
+/** Opens the Home Assistant app; returns a notice to show when it isn't installed. */
+private fun Context.openHomeAssistant(): String? {
+    val intent = HOME_ASSISTANT_PACKAGES.firstNotNullOfOrNull { packageManager.getLaunchIntentForPackage(it) }
+        ?: return "The Home Assistant app is not installed."
+    startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    return null
+}
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -479,6 +492,7 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
     var dim by remember { mutableIntStateOf(current.dimPercent) }
     var background by remember { mutableStateOf(current.backgroundColor) }
     var rotation by remember { mutableIntStateOf(current.rotationLock) }
+    var homeAssistant by remember { mutableStateOf(current.homeAssistantButton) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Layout") },
@@ -529,13 +543,18 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                     for ((label, value) in ROTATIONS) Choice(label, selected = rotation == value) { rotation = value }
                 }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Home Assistant button", modifier = Modifier.weight(1f))
+                    Switch(checked = homeAssistant, onCheckedChange = { homeAssistant = it })
+                }
             }
         },
         confirmButton = { TextButton(onClick = { onApply(
                         current.copy(
                             cols = cols, rows = rows, iconSize = iconSize, gapPercent = gap, cornerPercent = corner,
                             outerCornersOnly = outerOnly, powerSave = powerSave, dimPercent = dim, backgroundColor = background,
-                            rotationLock = rotation,
+                            rotationLock = rotation, homeAssistantButton = homeAssistant,
                         ),
                     ) }) { Text("Apply") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },

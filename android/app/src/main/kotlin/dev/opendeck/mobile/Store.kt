@@ -30,6 +30,8 @@ data class StoredDevice(
     val backgroundColor: Long = DuotoneBlue.bg,
     /** Keypad orientation, an ActivityInfo.SCREEN_ORIENTATION_* value. */
     val rotationLock: Int = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
+    /** Shows a button in the keypad's top bar that opens the Home Assistant app. */
+    val homeAssistantButton: Boolean = false,
 ) {
     val layout: Layout get() = Layout(cols, rows)
 }
