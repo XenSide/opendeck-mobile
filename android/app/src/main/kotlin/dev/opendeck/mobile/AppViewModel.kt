@@ -791,7 +791,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val RETRY_DELAY_MS = 3_000L
         const val MAX_CONNECT_ATTEMPTS = 5
         const val MAX_STORED_ENDPOINTS = 8
-        private const val ICON_QUIET_MS = 120L
+        // How long a page redraw waits for the icon burst to go quiet before showing it. Was 120 ms; the user chose
+        // 60 for faster page changes, accepting that a provisional icon may flash now and then.
+        private const val ICON_QUIET_MS = 60L
         private const val ICON_MAX_WAIT_MS = 500L
         private const val PRESS_MASK_FRACTION = 22f / 144f
         private const val PRESS_MASK_RIM = 3f
