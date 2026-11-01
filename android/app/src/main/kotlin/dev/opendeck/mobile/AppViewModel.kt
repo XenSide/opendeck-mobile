@@ -19,6 +19,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.opendeck.core.ClientInformation
 import dev.opendeck.core.CryptoBox
+import dev.opendeck.core.DuotoneIcon
 import dev.opendeck.core.Endpoint
 import dev.opendeck.core.Endpoints
 import dev.opendeck.core.ErrorCode
@@ -116,6 +117,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // (e.g. plugins drawing multi-key sliders as single keys), then the final one.
     private val pendingIcons = mutableMapOf<Int, ImageBitmap?>() // null = blank key
     private var iconFlush: Job? = null
+    // The device whose icon style the reader thread applies; set before the open so the first icons get it too.
+    @Volatile private var iconStyle: StoredDevice? = null
     // Each visited page's icons, so a swipe can show the next page under the finger before the desktop sends it.
     private val pageCache = mutableMapOf<Pair<String?, Int>, Map<Int, ImageBitmap>>()
     private var profileID: String? = null
@@ -357,6 +360,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         page = PageInfo(0, 0)
         deviceID = device.id
         save { it.copy(lastHostID = ws, lastDeviceID = device.id) }
+        iconStyle = currentDevice
         retry = null
         screen = Screen.Keypad
     }
@@ -365,6 +369,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val s = session ?: return
         val ws = hostID ?: return
         val dev = stored.host(ws)?.devices?.firstOrNull { it.id == id } ?: return
+        iconStyle = dev
         // The server allows one device per connection (a second open gets ResourceLimitReached).
         val open = s.currentDevice
         if (open != null && s.state.value == SessionState.DeviceOpen) {
@@ -483,6 +488,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 h.copy(devices = h.devices.map { if (it.id == id) it.copy(cols = layout.cols, rows = layout.rows, iconSize = iconSize) else it })
             }
         }
+        iconStyle = currentDevice
         clearIcons()
         titles.clear()
         session?.updateLayout(layout, iconSize)
@@ -506,10 +512,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         backgroundGradient = new.backgroundGradient,
                         rotationLock = new.rotationLock,
                         homeAssistantButton = new.homeAssistantButton,
+                        duotoneIcons = new.duotoneIcons,
+                        duotoneGradient = new.duotoneGradient,
                     )
                 })
             }
         }
+        iconStyle = currentDevice
     }
 
     fun back() {
@@ -581,6 +590,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     bmp.copyPixelsFromBuffer(ByteBuffer.wrap(rgba))
                     // Pressed icons are recognised by their pixels: arrival order vs. release is unreliable.
                     if (hasPressMask(bmp)) fillPressMask(bmp) // reader thread, before the bitmap is shared
+                    iconStyle?.let { dev -> dev.iconTones(message.index % dev.cols)?.let { (l, r) -> duotone(bmp, l, r) } }
                     val image = bmp.asImageBitmap()
                     onMain(s) { queueIcon(message.index, image) }
                 }
@@ -684,6 +694,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             bmp.setPixels(px, 0, n, x0, y0, n, n)
         }
+    }
+
+    private fun duotone(bmp: Bitmap, left: DuotoneIcon.Tones, right: DuotoneIcon.Tones) {
+        val px = IntArray(bmp.width * bmp.height)
+        bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+        DuotoneIcon.recolor(px, bmp.width, bmp.height, left, right, Duotones.map { it.tones })
+        bmp.setPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
     }
 
     private fun decodeIcon(m: ServerMessage.Icon): ByteArray? {
