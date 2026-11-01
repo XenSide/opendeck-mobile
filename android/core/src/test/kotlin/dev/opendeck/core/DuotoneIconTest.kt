@@ -152,6 +152,48 @@ class DuotoneIconTest {
         assertEquals(purple.pri, at(px, 7, 7))
     }
 
+    @Test fun dimmedPackPartsStayDimmed() {
+        // A Volume Controller NEO key: pack bg tile, a dimmed (bg/sec blend) app icon covering a fifth of it,
+        // a sec fader. The icon must stay, half transparent in sec, not vanish into the tile.
+        val dim = DuotoneIcon.mix(blue.bg, blue.sec, 0.45f)
+        val n2 = 40
+        val px = IntArray(n2 * n2) { i ->
+            val x = i % n2
+            val y = i / n2
+            val c = when {
+                x in 12..29 && y in 12..29 -> dim
+                x in 2..5 -> blue.sec
+                else -> blue.bg
+            }
+            0xFF000000.toInt() or c
+        }
+        DuotoneIcon.recolor(px, n2, n2, purple, purple, pack)
+        val a = px[20 * n2 + 20] ushr 24
+        assert(a in 95..135) { "dimmed icon alpha $a" }
+        assertEquals(purple.sec, px[20 * n2 + 20] and 0xFFFFFF)
+        assertEquals(0, px[20 * n2 + 35] ushr 24)
+    }
+
+    @Test fun keptPaletteKeepsItsColours() {
+        // A muted (red) Volume Controller NEO key keeps red; only its tile goes.
+        val red = DuotoneIcon.Tones(0x623D46, 0xA14E5D, 0xFF6783)
+        val px = icon(red.bg, red.sec, inner = red.pri)
+        DuotoneIcon.recolor(px, n, n, purple, purple, pack, keep = listOf(red))
+        assertEquals(0, alpha(px, 0, 0))
+        assertEquals(red.sec, at(px, 5, 5))
+        assertEquals(red.pri, at(px, 7, 7))
+    }
+
+    @Test fun redKeyIsNotTakenForOrange() {
+        // The muted fader half: mostly red bg with a dimmed red label. Orange's bg is within reach of red's,
+        // so the best-fitting palette must win, not the first one checked.
+        val red = DuotoneIcon.Tones(0x623D46, 0xA14E5D, 0xFF6783)
+        val orange = DuotoneIcon.Tones(0x6A5542, 0xA67B50, 0xFFB367)
+        val px = icon(red.bg, DuotoneIcon.mix(red.bg, red.sec, 0.4f), inner = red.sec)
+        DuotoneIcon.recolor(px, n, n, purple, purple, pack, keep = listOf(orange, red))
+        assertEquals(red.sec, at(px, 7, 7))
+    }
+
     @Test fun packPixelSlightlyOffTheBackgroundStaysNearlyTransparent() {
         // A pack icon whose edge column is a few levels off its bg (a blended edge): no visible line.
         val px = icon(blue.bg, blue.sec, inner = blue.pri)
