@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import android.util.LruCache
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -696,11 +697,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** A recoloured icon, kept with its source so a hash collision can never show the wrong icon. */
+    private class Recoloured(val source: IntArray, val result: IntArray)
+
+    // Stream Deck re-sends identical icons on every page change and after each key's pressed image, and this
+    // runs on the reader thread, ahead of the next message: recolour each distinct icon once.
+    private val recolourCache = LruCache<List<Any>, Recoloured>(RECOLOUR_CACHE_SIZE)
+
     private fun duotone(bmp: Bitmap, left: DuotoneIcon.Tones, right: DuotoneIcon.Tones) {
         val px = IntArray(bmp.width * bmp.height)
         bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-        DuotoneIcon.recolor(px, bmp.width, bmp.height, left, right, REMAP_PALETTES, KEEP_PALETTES)
-        bmp.setPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+        val key = listOf(px.contentHashCode(), bmp.width, left, right)
+        val hit = recolourCache.get(key)
+        val out = if (hit != null && hit.source.contentEquals(px)) hit.result else {
+            val source = px.copyOf()
+            DuotoneIcon.recolor(px, bmp.width, bmp.height, left, right, REMAP_PALETTES, KEEP_PALETTES)
+            recolourCache.put(key, Recoloured(source, px)) // px is only read from here on
+            px
+        }
+        bmp.setPixels(out, 0, bmp.width, 0, 0, bmp.width, bmp.height)
     }
 
     private fun decodeIcon(m: ServerMessage.Icon): ByteArray? {
@@ -765,6 +780,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // Blue and purple icons follow the column gradient; orange and red keep their colour (a muted app is red).
         private val REMAP_PALETTES = listOf(DuotoneBlue, DuotonePurple).map { it.tones }
         private val KEEP_PALETTES = (Duotones - DuotoneBlue - DuotonePurple).map { it.tones }
+        // Three 15-key pages plus pressed images; about 10 MB at 144 px.
+        private const val RECOLOUR_CACHE_SIZE = 64
         private const val TAG = "OpenDeck"
     }
 }
