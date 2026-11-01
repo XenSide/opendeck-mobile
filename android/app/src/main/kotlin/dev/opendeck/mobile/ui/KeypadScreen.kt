@@ -58,6 +58,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawOutline
@@ -89,6 +93,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import dev.opendeck.core.Dither
 import dev.opendeck.core.Layout
 import dev.opendeck.mobile.AppViewModel
 import dev.opendeck.mobile.DuotoneBlue
@@ -205,8 +210,9 @@ fun KeypadScreen(vm: AppViewModel) {
         }
     }
 
+    val background = remember(width, device.backgroundGradient, device.backgroundColor) { keypadBackground(device, width) }
     Box(
-        Modifier.fillMaxSize().background(keypadBackground(device)).onSizeChanged { width = it.width }
+        Modifier.fillMaxSize().background(background).onSizeChanged { width = it.width }
             .then(touchWakes).then(swipe),
     ) {
         KeyGrid(
@@ -252,7 +258,10 @@ fun KeypadScreen(vm: AppViewModel) {
             onApply = { new ->
                 vm.setStyle(new)
                 // Re-sending the keypad config reloads every icon, so skip it for style-only changes.
-                if (new.layout != layout || new.iconSize != device.iconSize) vm.setLayout(new.layout, new.iconSize)
+                // Duotone is baked in when an icon arrives, so changing it needs the reload too.
+                if (new.layout != layout || new.iconSize != device.iconSize ||
+                    new.duotoneIcons != device.duotoneIcons || new.duotoneGradient != device.duotoneGradient
+                ) vm.setLayout(new.layout, new.iconSize)
                 showLayout = false
             },
         )
@@ -310,9 +319,13 @@ private fun PowerSaveBrightness(enabled: Boolean, dimPercent: Int, wake: IntStat
 
 private const val WAKE_MS = 5000L
 
-private fun keypadBackground(device: StoredDevice): Brush =
-    if (device.backgroundGradient) Brush.horizontalGradient(listOf(Color(DuotoneBlue.bg), Color(DuotonePurple.bg)))
-    else SolidColor(Color(device.backgroundColor))
+/** The gradient is a dithered strip, drawn 1:1 and repeated down the screen: a plain gradient brush bands. */
+private fun keypadBackground(device: StoredDevice, width: Int): Brush {
+    if (!device.backgroundGradient) return SolidColor(Color(device.backgroundColor))
+    val strip = Dither.horizontalGradient(width, DuotoneBlue.bg.toInt(), DuotonePurple.bg.toInt())
+    val bitmap = android.graphics.Bitmap.createBitmap(strip, width, Dither.PERIOD, android.graphics.Bitmap.Config.ARGB_8888)
+    return ShaderBrush(ImageShader(bitmap.asImageBitmap(), TileMode.Clamp, TileMode.Repeated))
+}
 
 // Long enough for a swipe to pass the touch slop, short enough that a hold still feels instant.
 private const val PRESS_DELAY_MS = 120L
@@ -367,10 +380,15 @@ private fun KeyGrid(
                 Row {
                     for (col in 0 until layout.cols) {
                         val index = Keypad.index(row, col, layout.cols)
+                        val tones = device.iconTones(col)
                         KeyCell(
                             size = cell,
                             gapPercent = device.gapPercent,
                             shape = keyShape(cell, device, row, col),
+                            // Black parts of an icon arrive transparent, so this shows there. Duotone icons
+                            // have a transparent tile and let the keypad background through instead.
+                            tile = if (tones != null) Color.Transparent else Color(0xFF101010),
+                            outline = tones?.let { Color(0xFF000000.toInt() or it.first.sec) } ?: Color(0xFF2C2C2C),
                             icon = { icon(index) },
                             title = { title(index) },
                             onPress = onPress?.let { f -> { pressed: Boolean -> f(row, col, pressed) } },
@@ -403,6 +421,8 @@ private fun KeyCell(
     size: Dp,
     gapPercent: Int,
     shape: Shape,
+    tile: Color,
+    outline: Color,
     icon: () -> ImageBitmap?,
     title: () -> String?,
     onPress: ((Boolean) -> Unit)?,
@@ -479,10 +499,10 @@ private fun KeyCell(
             // Keys without an icon draw nothing, so the screen background shows through.
             .drawBehind {
                 val bitmap = icon() ?: return@drawBehind
-                drawRect(Color(0xFF101010))
+                drawRect(tile)
                 drawImage(bitmap, dstSize = IntSize(this.size.width.roundToInt(), this.size.height.roundToInt()), filterQuality = FilterQuality.Low)
                 // At gap 0 neighbouring borders would show as dividing lines. Stroke is centred on the clip edge: 2dp shows 1dp.
-                if (gapPercent > 0) drawOutline(shape.createOutline(this.size, layoutDirection, this), Color(0xFF2C2C2C), style = Stroke(2.dp.toPx()))
+                if (gapPercent > 0) drawOutline(shape.createOutline(this.size, layoutDirection, this), outline, style = Stroke(2.dp.toPx()))
             }
             .semantics { contentDescription = title()?.takeIf { it.isNotBlank() } ?: "Key" },
     )
@@ -500,6 +520,8 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
     var dim by remember { mutableIntStateOf(current.dimPercent) }
     var background by remember { mutableStateOf(current.backgroundColor) }
     var backgroundGradient by remember { mutableStateOf(current.backgroundGradient) }
+    var duotoneIcons by remember { mutableStateOf(current.duotoneIcons) }
+    var duotoneGradient by remember { mutableStateOf(current.duotoneGradient) }
     var rotation by remember { mutableIntStateOf(current.rotationLock) }
     var homeAssistant by remember { mutableStateOf(current.homeAssistantButton) }
     AlertDialog(
@@ -555,6 +577,15 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
                     }
                 }
                 Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Duotone icons", modifier = Modifier.weight(1f))
+                    Switch(checked = duotoneIcons, onCheckedChange = { duotoneIcons = it })
+                }
+                if (duotoneIcons) Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Blue → Purple across columns", modifier = Modifier.weight(1f))
+                    Switch(checked = duotoneGradient, onCheckedChange = { duotoneGradient = it })
+                }
+                Spacer(Modifier.height(8.dp))
                 Text("Rotation", style = MaterialTheme.typography.labelLarge)
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                     for ((label, value) in ROTATIONS) Choice(label, selected = rotation == value) { rotation = value }
@@ -570,7 +601,7 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
                         current.copy(
                             cols = cols, rows = rows, iconSize = iconSize, gapPercent = gap, cornerPercent = corner,
                             outerCornersOnly = outerOnly, powerSave = powerSave, dimPercent = dim, backgroundColor = background,
-                            backgroundGradient = backgroundGradient,
+                            backgroundGradient = backgroundGradient, duotoneIcons = duotoneIcons, duotoneGradient = duotoneGradient,
                             rotationLock = rotation, homeAssistantButton = homeAssistant,
                         ),
                     ) }) { Text("Apply") } },

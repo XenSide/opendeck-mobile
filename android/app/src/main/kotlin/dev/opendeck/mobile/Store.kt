@@ -3,6 +3,7 @@ package dev.opendeck.mobile
 import android.content.pm.ActivityInfo
 import android.util.Log
 import dev.opendeck.core.CryptoBox
+import dev.opendeck.core.DuotoneIcon
 import dev.opendeck.core.Hex
 import dev.opendeck.core.KeyPair
 import dev.opendeck.core.Keypad
@@ -30,16 +31,32 @@ data class StoredDevice(
     val backgroundColor: Long = DuotoneBlue.bg,
     /** Background runs from the Duotone blue to the purple, left to right; replaces backgroundColor. */
     val backgroundGradient: Boolean = true,
+    /** Recolour icons in the Duotone style; duotoneGradient runs them blue to purple across the columns. */
+    val duotoneIcons: Boolean = false,
+    val duotoneGradient: Boolean = true,
     /** Keypad orientation, an ActivityInfo.SCREEN_ORIENTATION_* value. */
     val rotationLock: Int = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
     /** Shows a button in the keypad's top bar that opens the Home Assistant app. */
     val homeAssistantButton: Boolean = false,
 ) {
     val layout: Layout get() = Layout(cols, rows)
+
+    /**
+     * The tones at the left and right edge of the keys in [col], or null to keep icon colours. With the
+     * gradient, blue at the grid's left edge runs smoothly to purple at its right edge.
+     */
+    fun iconTones(col: Int): Pair<DuotoneIcon.Tones, DuotoneIcon.Tones>? {
+        if (!duotoneIcons) return null
+        if (!duotoneGradient) return DuotoneBlue.tones to DuotoneBlue.tones
+        fun at(edge: Int) = DuotoneBlue.tones.blend(DuotonePurple.tones, edge.toFloat() / cols)
+        return at(col) to at(col + 1)
+    }
 }
 
 /** The Duotone Essentials palettes, as in the Volume Controller NEO key style. */
-data class Duotone(val name: String, val bg: Long, val sec: Long, val pri: Long)
+data class Duotone(val name: String, val bg: Long, val sec: Long, val pri: Long) {
+    val tones get() = DuotoneIcon.Tones(bg.toInt(), sec.toInt(), pri.toInt())
+}
 
 val DuotoneBlue = Duotone("Blue", 0xFF3B4C66, 0xFF4C70A3, 0xFF67A4FF)
 val DuotonePurple = Duotone("Purple", 0xFF4E3D66, 0xFF774EA3, 0xFFB367FF)
