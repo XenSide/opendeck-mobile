@@ -503,6 +503,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         powerSave = new.powerSave,
                         dimPercent = new.dimPercent,
                         backgroundColor = new.backgroundColor,
+                        backgroundGradient = new.backgroundGradient,
                         rotationLock = new.rotationLock,
                         homeAssistantButton = new.homeAssistantButton,
                     )

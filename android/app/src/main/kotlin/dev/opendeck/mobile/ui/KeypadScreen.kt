@@ -54,10 +54,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -89,6 +91,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import dev.opendeck.core.Layout
 import dev.opendeck.mobile.AppViewModel
+import dev.opendeck.mobile.DuotoneBlue
+import dev.opendeck.mobile.DuotonePurple
 import dev.opendeck.mobile.Duotones
 import dev.opendeck.mobile.StoredDevice
 
@@ -202,7 +206,7 @@ fun KeypadScreen(vm: AppViewModel) {
     }
 
     Box(
-        Modifier.fillMaxSize().background(Color(device.backgroundColor)).onSizeChanged { width = it.width }
+        Modifier.fillMaxSize().background(keypadBackground(device)).onSizeChanged { width = it.width }
             .then(touchWakes).then(swipe),
     ) {
         KeyGrid(
@@ -305,6 +309,10 @@ private fun PowerSaveBrightness(enabled: Boolean, dimPercent: Int, wake: IntStat
 }
 
 private const val WAKE_MS = 5000L
+
+private fun keypadBackground(device: StoredDevice): Brush =
+    if (device.backgroundGradient) Brush.horizontalGradient(listOf(Color(DuotoneBlue.bg), Color(DuotonePurple.bg)))
+    else SolidColor(Color(device.backgroundColor))
 
 // Long enough for a swipe to pass the touch slop, short enough that a hold still feels instant.
 private const val PRESS_DELAY_MS = 120L
@@ -491,6 +499,7 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
     var powerSave by remember { mutableStateOf(current.powerSave) }
     var dim by remember { mutableIntStateOf(current.dimPercent) }
     var background by remember { mutableStateOf(current.backgroundColor) }
+    var backgroundGradient by remember { mutableStateOf(current.backgroundGradient) }
     var rotation by remember { mutableIntStateOf(current.rotationLock) }
     var homeAssistant by remember { mutableStateOf(current.homeAssistantButton) }
     AlertDialog(
@@ -533,9 +542,16 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
                 Spacer(Modifier.height(8.dp))
                 Text("Background", style = MaterialTheme.typography.labelLarge)
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
-                    Choice("Black", selected = background == 0xFF000000L) { background = 0xFF000000L }
+                    Choice("Blue → Purple", selected = backgroundGradient) { backgroundGradient = true }
+                    Choice("Black", selected = !backgroundGradient && background == 0xFF000000L) {
+                        background = 0xFF000000L
+                        backgroundGradient = false
+                    }
                     for (d in Duotones) {
-                        Choice(d.name, selected = background == d.bg) { background = d.bg }
+                        Choice(d.name, selected = !backgroundGradient && background == d.bg) {
+                            background = d.bg
+                            backgroundGradient = false
+                        }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -554,6 +570,7 @@ private fun LayoutDialog(current: StoredDevice, onDismiss: () -> Unit, onApply: 
                         current.copy(
                             cols = cols, rows = rows, iconSize = iconSize, gapPercent = gap, cornerPercent = corner,
                             outerCornersOnly = outerOnly, powerSave = powerSave, dimPercent = dim, backgroundColor = background,
+                            backgroundGradient = backgroundGradient,
                             rotationLock = rotation, homeAssistantButton = homeAssistant,
                         ),
                     ) }) { Text("Apply") } },

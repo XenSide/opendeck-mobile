@@ -28,6 +28,8 @@ data class StoredDevice(
     val dimPercent: Int = 25,
     /** Keypad background, ARGB. Defaults to the blue of the Duotone key style. */
     val backgroundColor: Long = DuotoneBlue.bg,
+    /** Background runs from the Duotone blue to the purple, left to right; replaces backgroundColor. */
+    val backgroundGradient: Boolean = true,
     /** Keypad orientation, an ActivityInfo.SCREEN_ORIENTATION_* value. */
     val rotationLock: Int = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
     /** Shows a button in the keypad's top bar that opens the Home Assistant app. */
@@ -40,9 +42,10 @@ data class StoredDevice(
 data class Duotone(val name: String, val bg: Long, val sec: Long, val pri: Long)
 
 val DuotoneBlue = Duotone("Blue", 0xFF3B4C66, 0xFF4C70A3, 0xFF67A4FF)
+val DuotonePurple = Duotone("Purple", 0xFF4E3D66, 0xFF774EA3, 0xFFB367FF)
 val Duotones = listOf(
     DuotoneBlue,
-    Duotone("Purple", 0xFF4E3D66, 0xFF774EA3, 0xFFB367FF),
+    DuotonePurple,
     Duotone("Orange", 0xFF6A5542, 0xFFA67B50, 0xFFFFB367),
     Duotone("Red", 0xFF623D46, 0xFFA14E5D, 0xFFFF6783),
 )
