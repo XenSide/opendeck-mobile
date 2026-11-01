@@ -54,17 +54,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.ImageShader
-import androidx.compose.ui.graphics.ShaderBrush
-import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -81,6 +77,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -210,9 +207,9 @@ fun KeypadScreen(vm: AppViewModel) {
         }
     }
 
-    val background = remember(width, device.backgroundGradient, device.backgroundColor) { keypadBackground(device, width) }
+    val strip = remember(width, device.backgroundGradient) { if (device.backgroundGradient && width > 1) gradientStrip(width) else null }
     Box(
-        Modifier.fillMaxSize().background(background).onSizeChanged { width = it.width }
+        Modifier.fillMaxSize().drawBehind { keypadBackground(device, strip) }.onSizeChanged { width = it.width }
             .then(touchWakes).then(swipe),
     ) {
         KeyGrid(
@@ -319,12 +316,24 @@ private fun PowerSaveBrightness(enabled: Boolean, dimPercent: Int, wake: IntStat
 
 private const val WAKE_MS = 5000L
 
-/** The gradient is a dithered strip, drawn 1:1 and repeated down the screen: a plain gradient brush bands. */
-private fun keypadBackground(device: StoredDevice, width: Int): Brush {
-    if (!device.backgroundGradient) return SolidColor(Color(device.backgroundColor))
+/** The background gradient's dithered strip, one screen width by Dither.PERIOD rows: a plain gradient bands. */
+private fun gradientStrip(width: Int): ImageBitmap {
     val strip = Dither.horizontalGradient(width, DuotoneBlue.bg.toInt(), DuotonePurple.bg.toInt())
-    val bitmap = android.graphics.Bitmap.createBitmap(strip, width, Dither.PERIOD, android.graphics.Bitmap.Config.ARGB_8888)
-    return ShaderBrush(ImageShader(bitmap.asImageBitmap(), TileMode.Clamp, TileMode.Repeated))
+    return android.graphics.Bitmap.createBitmap(strip, width, Dither.PERIOD, android.graphics.Bitmap.Config.ARGB_8888).asImageBitmap()
+}
+
+/**
+ * Stacks the strip down the screen pixel for pixel. Not a repeating shader brush: it is sampled with bilinear
+ * filtering, and on the P20 a band of the screen came out averaged flat, the dither pattern smeared away.
+ */
+private fun DrawScope.keypadBackground(device: StoredDevice, strip: ImageBitmap?) {
+    if (!device.backgroundGradient) return drawRect(Color(device.backgroundColor))
+    if (strip == null) return drawRect(Color(DuotoneBlue.bg)) // first frame, before the width is known
+    var y = 0
+    while (y < size.height) {
+        drawImage(strip, dstOffset = IntOffset(0, y), dstSize = IntSize(strip.width, strip.height), filterQuality = FilterQuality.None)
+        y += strip.height
+    }
 }
 
 // Long enough for a swipe to pass the touch slop, short enough that a hold still feels instant.
