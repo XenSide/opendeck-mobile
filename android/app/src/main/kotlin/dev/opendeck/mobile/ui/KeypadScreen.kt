@@ -336,8 +336,10 @@ private fun DrawScope.keypadBackground(device: StoredDevice, strip: ImageBitmap?
     }
 }
 
-// Long enough for a swipe to pass the touch slop, short enough that a hold still feels instant.
-private const val PRESS_DELAY_MS = 120L
+// A touch still within the slop after this long is a press, sent then rather than when the finger lifts. Short so
+// taps feel instant (it was 120 ms, the user chose 40); a swipe slow enough not to pass the slop by then presses
+// the key it started on.
+private const val PRESS_DELAY_MS = 40L
 private val MIN_SWIPE = 24.dp
 private val FLING_SPEED = 400.dp // per second
 private const val SLIDE_MS = 160
