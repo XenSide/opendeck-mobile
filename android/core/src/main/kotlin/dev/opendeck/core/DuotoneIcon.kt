@@ -1,6 +1,7 @@
 package dev.opendeck.core
 
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -37,7 +38,9 @@ object DuotoneIcon {
         val glyph = GlyphTones(left, right, w)
         // The palette the icon fits best, not the first one over the bar: a red (muted) key's dark bg is also
         // within reach of the orange palette, and turned orange when orange was checked first.
-        val fits = (remap.map { it to glyph } + keep.map { it to GlyphTones(it, it, w) }).map { Triple(it.first, it.second, packShare(px, rgb, it.first)) }
+        var opaque = 0
+        for (p in px) if (p ushr 24 >= 128) opaque++
+        val fits = (remap.map { it to glyph } + keep.map { it to GlyphTones(it, it, w) }).map { Triple(it.first, it.second, packShare(px, rgb, it.first, opaque)) }
         val fit = fits.maxByOrNull { it.third }
         if (fit != null && fit.third >= PACK_SHARE) return swapPalette(px, rgb, w, fit.first, fit.second)
         val tile = tileMask(rgb, w, h)
@@ -60,6 +63,8 @@ object DuotoneIcon {
                 val x = i % w
                 val y = i / w
                 var best = blendness(rgb[i], near[i], coreNear[i])
+                // Nothing can beat a perfect fit by the 1e-3 margin below: skip the search.
+                if (best + 1e-3f >= 1f) continue
                 var owner = coreNear[i]
                 for (dy in -r..r) for (dx in -r..r) {
                     val nx = x + dx
@@ -221,15 +226,46 @@ object DuotoneIcon {
      * like (66,93,130); counting only the three colours missed those icons, and the general path then lost
      * their low-contrast parts to the tile.
      */
-    private fun packShare(px: IntArray, rgb: IntArray, pal: Tones): Float {
-        val segments = listOf(pal.bg to pal.sec, pal.sec to pal.pri, pal.bg to pal.pri)
-        var opaque = 0
+    private fun packShare(px: IntArray, rgb: IntArray, pal: Tones, opaque: Int): Float {
+        if (opaque == 0) return 0f
+        val ends = intArrayOf(pal.bg, pal.sec, pal.sec, pal.pri, pal.bg, pal.pri)
+        // Hot path (75% of a recolour before): stop once the misses rule the palette out, and reuse the answer
+        // for runs of one colour (flat tiles). A palette ruled out returns -1, below any share that counts.
+        val allowedMisses = opaque - ceil(PACK_SHARE * opaque).toInt()
+        var misses = 0
         var on = 0
+        var lastColour = -1
+        var lastHit = false
         for (i in px.indices) if (px[i] ushr 24 >= 128) {
-            opaque++
-            if (segments.any { (a, b) -> dist(rgb[i], mix(a, b, project(rgb[i], a, b))) <= TILE_SEED }) on++
+            val c = rgb[i]
+            if (c != lastColour) {
+                lastColour = c
+                lastHit = onPalette(c, ends)
+            }
+            if (lastHit) on++ else if (++misses > allowedMisses) return -1f
         }
-        return if (opaque == 0) 0f else on.toFloat() / opaque
+        return on.toFloat() / opaque
+    }
+
+    /** Whether [c] lies within TILE_SEED (max channel difference) of one of the segments in [ends]. */
+    private fun onPalette(c: Int, ends: IntArray): Boolean {
+        for (k in 0 until 6 step 2) {
+            val a = ends[k]
+            val b = ends[k + 1]
+            // A pixel outside the segment's bounding box grown by TILE_SEED can't be that close to it.
+            var inBox = true
+            for (s in 0..16 step 8) {
+                val ca = a shr s and 0xFF
+                val cb = b shr s and 0xFF
+                val v = c shr s and 0xFF
+                if (v < minOf(ca, cb) - TILE_SEED || v > maxOf(ca, cb) + TILE_SEED) {
+                    inBox = false
+                    break
+                }
+            }
+            if (inBox && dist(c, mix(a, b, project(c, a, b))) <= TILE_SEED) return true
+        }
+        return false
     }
 
     /**
@@ -243,7 +279,16 @@ object DuotoneIcon {
         // ill-conditioned and turned a pixel a few levels off the bg into a visible secondary tone.
         val segments = listOf(Triple(fb, fs, 0 to 1), Triple(fs, fp, 1 to 2), Triple(fb, fp, 0 to 2))
         val wgt = FloatArray(3)
+        // Runs of one colour (flat tiles) share the same mix.
+        var lastColour = -1
+        var tile = 0f
+        var t = 0f
         for (i in px.indices) {
+            if (rgb[i] == lastColour) {
+                px[i] = withTile(px[i], target.color(i % w, i / w, t), tile)
+                continue
+            }
+            lastColour = rgb[i]
             var best = Float.MAX_VALUE
             var bestU = 0f
             var bestPair = 0 to 1
@@ -260,8 +305,9 @@ object DuotoneIcon {
             wgt[bestPair.first] = 1 - bestU
             wgt[bestPair.second] = bestU
             val glyph = wgt[1] + wgt[2]
-            val t = if (glyph < 1e-6f) 0f else wgt[2] / glyph
-            px[i] = withTile(px[i], target.color(i % w, i / w, t), wgt[0])
+            t = if (glyph < 1e-6f) 0f else wgt[2] / glyph
+            tile = wgt[0]
+            px[i] = withTile(px[i], target.color(i % w, i / w, t), tile)
         }
     }
 
@@ -330,9 +376,11 @@ object DuotoneIcon {
         // only if it is mostly tile colour (not the white of an eye whose shading touches the tile grey, not a
         // display gradient only partly tile cyan, which came out striped) and solid (not a speck of brush
         // texture in a stroke, not a thin rim).
-        val colours = HashSet<Int>()
-        for (i in rgb.indices) if (tile[i]) colours += rgb[i] shr 3 and 0x1F1F1F
-        fun tileish(i: Int) = (rgb[i] shr 3 and 0x1F1F1F) in colours
+        // 15-bit colour buckets (5 bits a channel) as a lookup table: a HashSet<Int> boxed every lookup.
+        val colours = BooleanArray(1 shl 15)
+        fun bucket(c: Int) = (c shr 9 and 0x7C00) or (c shr 6 and 0x3E0) or (c shr 3 and 0x1F)
+        for (i in rgb.indices) if (tile[i]) colours[bucket(rgb[i])] = true
+        fun tileish(i: Int) = colours[bucket(rgb[i])]
         val seen = BooleanArray(rgb.size)
         val minBlob = max(MIN_BLOB_PX, w * h / BLOB_DIVISOR)
         for (start in rgb.indices) {
