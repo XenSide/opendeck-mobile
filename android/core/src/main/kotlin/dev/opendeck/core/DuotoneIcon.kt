@@ -40,10 +40,15 @@ object DuotoneIcon {
         // within reach of the orange palette, and turned orange when orange was checked first.
         var opaque = 0
         for (p in px) if (p ushr 24 >= 128) opaque++
-        val fits = (remap.map { it to glyph } + keep.map { it to GlyphTones(it, it, w) }).map { Triple(it.first, it.second, packShare(px, rgb, it.first, opaque)) }
-        val fit = fits.maxByOrNull { it.third }
-        if (fit != null && fit.third >= PACK_SHARE) return swapPalette(px, rgb, w, fit.first, fit.second)
-        val tile = tileMask(rgb, w, h)
+        val palettes = remap + keep
+        val shares = packShares(px, rgb, palettes, opaque)
+        val fit = shares.indices.maxByOrNull { shares[it] }
+        if (fit != null && shares[fit] >= PACK_SHARE) {
+            val from = palettes[fit]
+            return swapPalette(px, rgb, w, from, if (fit < remap.size) glyph else GlyphTones(from, from, w))
+        }
+        val main = ringColor(rgb, w, h)
+        val tile = tileMask(rgb, w, h, main)
         val near = IntArray(px.size)
         val depth = nearestTile(rgb, tile, w, h, near)
         // The glyph core: glyph pixels deeper than the edge band. Pixels in the band (antialiasing, soft emoji
@@ -58,6 +63,7 @@ object DuotoneIcon {
         // core pixels within a few px, a band pixel takes the colour that best explains it as a tile blend.
         if (coreNear !== rgb) {
             val r = edgePx + 2
+            val tried = IntArray(TRIED_COLOURS)
             for (i in px.indices) {
                 if (tile[i] || core[i]) continue
                 val x = i % w
@@ -66,14 +72,23 @@ object DuotoneIcon {
                 // Nothing can beat a perfect fit by the 1e-3 margin below: skip the search.
                 if (best + 1e-3f >= 1f) continue
                 var owner = coreNear[i]
+                // The window is mostly a few colours (a folder's white): each is scored once. A repeat scores
+                // the same and could never beat the best by the margin, so skipping it changes nothing.
+                tried[0] = owner
+                var nTried = 1
                 for (dy in -r..r) for (dx in -r..r) {
                     val nx = x + dx
                     val ny = y + dy
                     if (nx < 0 || ny < 0 || nx >= w || ny >= h || !core[ny * w + nx]) continue
-                    val b = blendness(rgb[i], near[i], rgb[ny * w + nx])
+                    val cand = rgb[ny * w + nx]
+                    var seen = false
+                    for (q in 0 until nTried) if (tried[q] == cand) { seen = true; break }
+                    if (seen) continue
+                    if (nTried < tried.size) tried[nTried++] = cand
+                    val b = blendness(rgb[i], near[i], cand)
                     if (b > best + 1e-3f) {
                         best = b
-                        owner = rgb[ny * w + nx]
+                        owner = cand
                     }
                 }
                 coreNear[i] = owner
@@ -81,7 +96,7 @@ object DuotoneIcon {
         }
         // On a black (transparent) tile, near-black is background too: title outlines and shadows, dark glyph
         // edges. On a coloured tile it stays glyph, or black text on yellow would vanish with its tile.
-        val darkTile = lum(ringColor(rgb, w, h)) < DARK_TILE_LUM
+        val darkTile = lum(main) < DARK_TILE_LUM
         // Band pixels a little darker than their tile and close to its colour (the grey rim of the 👀 eyes) are
         // the icon's own antialiasing against the tile: background. Decided per pixel, so nothing flickers along
         // the rim. A drawn outline (a title's dark navy) or a glyph colour (the poop's brown) is far from the tile.
@@ -156,7 +171,7 @@ object DuotoneIcon {
             // Snap float noise at the means so they land exactly on the pack's sec and pri.
             if (abs(v) < SNAP) 0f else if (abs(v - 1) < SNAP) 1f else v
         }
-        for (i in px.indices) px[i] = withTile(px[i], glyph.color(i % w, i / w, t[i]), wt[i])
+        for (i in px.indices) px[i] = paint(px[i], i % w, i / w, t[i], wt[i], glyph)
     }
 
     /** Sec/pri running from [left] to [right] across [w] columns, dithered so the gradient has no bands. */
@@ -179,12 +194,21 @@ object DuotoneIcon {
          */
         fun color(x: Int, y: Int, t: Float): Int {
             val k = x * 3
-            fun ch(c: Int) = when {
-                t < 0 -> sec[k + c] + (bg[k + c] - sec[k + c]) * -t
-                t > 1 -> pri[k + c] + (255 - pri[k + c]) * (t - 1)
-                else -> sec[k + c] + (pri[k + c] - sec[k + c]) * t
+            // Hot path: plain arithmetic per channel, no inner function.
+            return when {
+                t < 0 -> Dither.rgb(
+                    sec[k] + (bg[k] - sec[k]) * -t, sec[k + 1] + (bg[k + 1] - sec[k + 1]) * -t,
+                    sec[k + 2] + (bg[k + 2] - sec[k + 2]) * -t, x, y,
+                )
+                t > 1 -> Dither.rgb(
+                    pri[k] + (255 - pri[k]) * (t - 1), pri[k + 1] + (255 - pri[k + 1]) * (t - 1),
+                    pri[k + 2] + (255 - pri[k + 2]) * (t - 1), x, y,
+                )
+                else -> Dither.rgb(
+                    sec[k] + (pri[k] - sec[k]) * t, sec[k + 1] + (pri[k + 1] - sec[k + 1]) * t,
+                    sec[k + 2] + (pri[k + 2] - sec[k + 2]) * t, x, y,
+                )
             }
-            return Dither.rgb(ch(0), ch(1), ch(2), x, y)
         }
     }
 
@@ -216,35 +240,61 @@ object DuotoneIcon {
         return project(c, t, g)
     }
 
-    /** [glyph] colour, with the [tile] share of the pixel taken out of its alpha. */
-    private fun withTile(p: Int, glyph: Int, tile: Float): Int =
-        ((p ushr 24) * (1 - tile)).roundToInt().coerceIn(0, 255) shl 24 or glyph
+    /**
+     * Pixel [p] repainted in the glyph colour for tone [t] at ([x], [y]), with the [tile] share of it taken out
+     * of its alpha. A pixel that ends up fully transparent skips the colour, the costliest part, and is 0.
+     */
+    private fun paint(p: Int, x: Int, y: Int, t: Float, tile: Float, glyph: GlyphTones): Int {
+        val alpha = ((p ushr 24) * (1 - tile)).roundToInt().coerceIn(0, 255)
+        return if (alpha == 0) 0 else alpha shl 24 or glyph.color(x, y, t)
+    }
 
     /**
-     * Share of the opaque pixels on [pal]'s colours or the lines between them. The lines count too: Volume
+     * For each of [pals], the share of the opaque pixels on its colours or the lines between them (-1 once ruled
+     * out). The lines count too: Volume
      * Controller NEO draws dimmed parts (an inactive app's icon, the unfilled part of a fader) as bg/sec blends
      * like (66,93,130); counting only the three colours missed those icons, and the general path then lost
      * their low-contrast parts to the tile.
      */
-    private fun packShare(px: IntArray, rgb: IntArray, pal: Tones, opaque: Int): Float {
-        if (opaque == 0) return 0f
-        val ends = intArrayOf(pal.bg, pal.sec, pal.sec, pal.pri, pal.bg, pal.pri)
-        // Hot path (75% of a recolour before): stop once the misses rule the palette out, and reuse the answer
-        // for runs of one colour (flat tiles). A palette ruled out returns -1, below any share that counts.
+    private fun packShares(px: IntArray, rgb: IntArray, pals: List<Tones>, opaque: Int): FloatArray {
+        val n = pals.size
+        val shares = FloatArray(n)
+        if (opaque == 0) return shares
+        val ends = Array(n) { p -> pals[p].let { intArrayOf(it.bg, it.sec, it.sec, it.pri, it.bg, it.pri) } }
+        // Hot path (75% of a recolour before): all palettes in one pass; a palette stops being checked once its
+        // misses rule it out (it then reports -1, below any share that counts); colours already seen reuse their
+        // answer, from the run they are in or a small direct-mapped cache.
         val allowedMisses = opaque - ceil(PACK_SHARE * opaque).toInt()
-        var misses = 0
-        var on = 0
+        val on = IntArray(n)
+        val misses = IntArray(n)
+        var alive = (1 shl n) - 1
+        val cacheColour = IntArray(CACHE_SLOTS) { -1 }
+        val cacheMask = IntArray(CACHE_SLOTS)
         var lastColour = -1
-        var lastHit = false
-        for (i in px.indices) if (px[i] ushr 24 >= 128) {
+        var lastMask = 0
+        for (i in px.indices) {
+            if (px[i] ushr 24 < 128) continue
             val c = rgb[i]
             if (c != lastColour) {
                 lastColour = c
-                lastHit = onPalette(c, ends)
+                val slot = (c xor (c ushr 11) xor (c ushr 19)) and (CACHE_SLOTS - 1)
+                if (cacheColour[slot] == c) lastMask = cacheMask[slot] else {
+                    // Only palettes still alive are checked; a dead one never comes back, so a missing bit is harmless.
+                    lastMask = 0
+                    for (p in 0 until n) if (alive and (1 shl p) != 0 && onPalette(c, ends[p])) lastMask = lastMask or (1 shl p)
+                    cacheColour[slot] = c
+                    cacheMask[slot] = lastMask
+                }
             }
-            if (lastHit) on++ else if (++misses > allowedMisses) return -1f
+            for (p in 0 until n) {
+                val bit = 1 shl p
+                if (alive and bit == 0) continue
+                if (lastMask and bit != 0) on[p]++ else if (++misses[p] > allowedMisses) alive = alive and bit.inv()
+            }
+            if (alive == 0) break
         }
-        return on.toFloat() / opaque
+        for (p in 0 until n) shares[p] = if (alive and (1 shl p) != 0) on[p].toFloat() / opaque else -1f
+        return shares
     }
 
     /** Whether [c] lies within TILE_SEED (max channel difference) of one of the segments in [ends]. */
@@ -279,16 +329,28 @@ object DuotoneIcon {
         // ill-conditioned and turned a pixel a few levels off the bg into a visible secondary tone.
         val segments = listOf(Triple(fb, fs, 0 to 1), Triple(fs, fp, 1 to 2), Triple(fb, fp, 0 to 2))
         val wgt = FloatArray(3)
-        // Runs of one colour (flat tiles) share the same mix.
+        // Colours already seen (runs of one colour, the few blends an antialiased edge repeats) reuse their mix,
+        // from the run or a small direct-mapped cache.
+        val cacheColour = IntArray(CACHE_SLOTS) { -1 }
+        val cacheT = FloatArray(CACHE_SLOTS)
+        val cacheTile = FloatArray(CACHE_SLOTS)
         var lastColour = -1
         var tile = 0f
         var t = 0f
         for (i in px.indices) {
-            if (rgb[i] == lastColour) {
-                px[i] = withTile(px[i], target.color(i % w, i / w, t), tile)
+            val c = rgb[i]
+            if (c == lastColour) {
+                px[i] = paint(px[i], i % w, i / w, t, tile, target)
                 continue
             }
-            lastColour = rgb[i]
+            lastColour = c
+            val slot = (c xor (c ushr 11) xor (c ushr 19)) and (CACHE_SLOTS - 1)
+            if (cacheColour[slot] == c) {
+                t = cacheT[slot]
+                tile = cacheTile[slot]
+                px[i] = paint(px[i], i % w, i / w, t, tile, target)
+                continue
+            }
             var best = Float.MAX_VALUE
             var bestU = 0f
             var bestPair = 0 to 1
@@ -307,7 +369,10 @@ object DuotoneIcon {
             val glyph = wgt[1] + wgt[2]
             t = if (glyph < 1e-6f) 0f else wgt[2] / glyph
             tile = wgt[0]
-            px[i] = withTile(px[i], target.color(i % w, i / w, t), tile)
+            cacheColour[slot] = c
+            cacheT[slot] = t
+            cacheTile[slot] = tile
+            px[i] = paint(px[i], i % w, i / w, t, tile, target)
         }
     }
 
@@ -336,8 +401,7 @@ object DuotoneIcon {
      * The tile background: a flood fill from the border pixels close to the border's main colour, spreading
      * to neighbours of nearly the same colour. It follows smooth gradient tiles and stops at glyph edges.
      */
-    private fun tileMask(rgb: IntArray, w: Int, h: Int): BooleanArray {
-        val main = ringColor(rgb, w, h)
+    private fun tileMask(rgb: IntArray, w: Int, h: Int, main: Int): BooleanArray {
         val tile = BooleanArray(rgb.size)
         val queue = IntArray(rgb.size)
         var tail = 0
@@ -362,10 +426,12 @@ object DuotoneIcon {
         flood()
         // Pockets of tile cut off by glyph parts touching the border (between two title descenders) are
         // seeded again from any border pixel with a colour the tile has, even far from its main colour.
-        val tileColours = HashSet<Int>()
-        for (i in rgb.indices) if (tile[i]) tileColours += rgb[i] shr 4 and 0x0F0F0F
+        // 12-bit colour buckets (4 bits a channel) in a table: a HashSet<Int> boxed every tile pixel.
+        val tileColours = BooleanArray(4096)
+        fun bucket12(c: Int) = (c shr 12 and 0xF00) or (c shr 8 and 0xF0) or (c shr 4 and 0xF)
+        for (i in rgb.indices) if (tile[i]) tileColours[bucket12(rgb[i])] = true
         forRing(w, h) { i ->
-            if (!tile[i] && (rgb[i] shr 4 and 0x0F0F0F) in tileColours) {
+            if (!tile[i] && tileColours[bucket12(rgb[i])]) {
                 tile[i] = true
                 queue[tail++] = i
             }
@@ -380,7 +446,8 @@ object DuotoneIcon {
         val colours = BooleanArray(1 shl 15)
         fun bucket(c: Int) = (c shr 9 and 0x7C00) or (c shr 6 and 0x3E0) or (c shr 3 and 0x1F)
         for (i in rgb.indices) if (tile[i]) colours[bucket(rgb[i])] = true
-        fun tileish(i: Int) = colours[bucket(rgb[i])]
+        val tileishAt = BooleanArray(rgb.size) { colours[bucket(rgb[it])] }
+        fun tileish(i: Int) = tileishAt[i]
         val seen = BooleanArray(rgb.size)
         val minBlob = max(MIN_BLOB_PX, w * h / BLOB_DIVISOR)
         for (start in rgb.indices) {
@@ -444,17 +511,21 @@ object DuotoneIcon {
 
     /** The most common colour on the icon's outer ring, averaged over its 16-level bucket. */
     private fun ringColor(rgb: IntArray, w: Int, h: Int): Int {
-        val buckets = HashMap<Int, IntArray>() // quantised colour -> count, r, g, b sums
+        // 12-bit buckets (4 bits a channel): count and channel sums, in plain arrays (a HashMap boxed every pixel).
+        val count = IntArray(4096)
+        val sums = IntArray(4096 * 3)
         forRing(w, h) { i ->
             val c = rgb[i]
-            val s = buckets.getOrPut(c shr 4 and 0x0F0F0F) { IntArray(4) }
-            s[0]++
-            s[1] += c shr 16 and 0xFF
-            s[2] += c shr 8 and 0xFF
-            s[3] += c and 0xFF
+            val k = (c shr 12 and 0xF00) or (c shr 8 and 0xF0) or (c shr 4 and 0xF)
+            count[k]++
+            sums[k * 3] += c shr 16 and 0xFF
+            sums[k * 3 + 1] += c shr 8 and 0xFF
+            sums[k * 3 + 2] += c and 0xFF
         }
-        val s = buckets.values.maxBy { it[0] }
-        return (s[1] / s[0]) shl 16 or (s[2] / s[0] shl 8) or (s[3] / s[0])
+        var k = 0
+        for (j in 1 until 4096) if (count[j] > count[k]) k = j
+        val n = count[k]
+        return (sums[k * 3] / n) shl 16 or (sums[k * 3 + 1] / n shl 8) or (sums[k * 3 + 2] / n)
     }
 
     private inline fun forRing(w: Int, h: Int, f: (Int) -> Unit) {
@@ -511,6 +582,10 @@ object DuotoneIcon {
     /** On a black tile, luminance below which a pixel is fully background, ramping to glyph over BLACK_RAMP above it. */
     private const val BLACK_LUM = 0.06f
     private const val BLACK_RAMP = 0.08f
+    /** Distinct candidate colours the owner search remembers per pixel; more are just scored again. */
+    private const val TRIED_COLOURS = 16
+    /** Slots in packShares' colour cache (a power of two). */
+    private const val CACHE_SLOTS = 1024
     /** Share of opaque pixels on one pack palette that marks an icon as already Duotone. */
     private const val PACK_SHARE = 0.85f
     /** Glyph groups closer than this in mean luminance are treated as one colour. */

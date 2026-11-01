@@ -1,7 +1,5 @@
 package dev.opendeck.core
 
-import kotlin.math.floor
-
 /**
  * 8x8 ordered (Bayer) dithering. The Duotone gradients are dark and span only ~20 levels per channel
  * across the screen, so plain rounding draws visible bands (measured on a P20: 45 flat bands up to
@@ -19,9 +17,13 @@ object Dither {
         63, 31, 55, 23, 61, 29, 53, 21,
     )
 
+    /** Each pattern cell's rounding offset, (cell + 0.5) / 64. */
+    private val OFFSET = FloatArray(64) { (BAYER[it] + 0.5f) / 64f }
+
     /** Rounds channel value [v] (0..255, fractional) up or down by the pattern at pixel ([x], [y]). */
     fun level(v: Float, x: Int, y: Int): Int =
-        floor(v + (BAYER[(y and 7) * 8 + (x and 7)] + 0.5f) / 64f).toInt().coerceIn(0, 255)
+        // Truncation is floor here: v is never negative. Hot path: three of these per glyph pixel.
+        (v + OFFSET[(y and 7) * 8 + (x and 7)]).toInt().coerceIn(0, 255)
 
     /** 0xRRGGBB from fractional channels, dithered at pixel ([x], [y]). */
     fun rgb(r: Float, g: Float, b: Float, x: Int, y: Int): Int =
