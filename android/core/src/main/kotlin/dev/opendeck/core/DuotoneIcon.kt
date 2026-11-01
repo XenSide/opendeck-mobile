@@ -2,8 +2,11 @@ package dev.opendeck.core
 
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * Recolours key icons in the Duotone Essentials style (as in the Volume Controller NEO keys): the glyph
@@ -35,20 +38,32 @@ object DuotoneIcon {
      */
     fun recolor(px: IntArray, w: Int, h: Int, left: Tones, right: Tones, remap: List<Tones>, keep: List<Tones> = emptyList()) {
         val rgb = IntArray(px.size) { rgb(px[it]) }
-        val glyph = GlyphTones(left, right, w)
         // The palette the icon fits best, not the first one over the bar: a red (muted) key's dark bg is also
         // within reach of the orange palette, and turned orange when orange was checked first.
         var opaque = 0
-        for (p in px) if (p ushr 24 >= 128) opaque++
+        var peak = 0
+        for (i in px.indices) if (px[i] ushr 24 >= 128) {
+            opaque++
+            val c = rgb[i]
+            peak = max(peak, max(c shr 16 and 0xFF, max(c shr 8 and 0xFF, c and 0xFF)))
+        }
         val palettes = remap + keep
         val shares = packShares(px, rgb, palettes, opaque)
         val fit = shares.indices.maxByOrNull { shares[it] }
         if (fit != null && shares[fit] >= PACK_SHARE) {
             val from = palettes[fit]
-            return swapPalette(px, rgb, w, from, if (fit < remap.size) glyph else GlyphTones(from, from, w))
+            return swapPalette(px, rgb, w, from, if (fit < remap.size) GlyphTones(left, right, w) else GlyphTones(from, from, w))
         }
+        // A key under a black overlay (Discord's 50% for a disabled key or a channel you're not in) has nothing
+        // above half brightness. Recoloured as is, its tones were stretched back to full sec/pri and the dim was
+        // gone: recolour it brightened, then fade the glyph by the same factor, the way Volume Controller NEO
+        // fades an inactive app towards the background.
+        val dim = if (peak in 1..DIM_PEAK) peak / 255f else 1f
+        if (dim < 1f) for (i in rgb.indices) rgb[i] = brighten(rgb[i], 1f / dim)
+        val glyph = GlyphTones(left, right, w, dim)
         val main = ringColor(rgb, w, h)
         val tile = tileMask(rgb, w, h, main)
+        val photo = avatars(rgb, tile, w, h, main)
         val near = IntArray(px.size)
         val depth = nearestTile(rgb, tile, w, h, near)
         // The glyph core: glyph pixels deeper than the edge band. Pixels in the band (antialiasing, soft emoji
@@ -114,9 +129,10 @@ object DuotoneIcon {
         val source = IntArray(px.size) { if (blend[it] >= 0.5f) coreNear[it] else rgb[it] }
 
         // Otsu over the clearly-glyph pixels: the luminance cut that best splits them into a dark and a bright group.
+        // Photos don't take part: they keep their colours, and their many tones would decide the glyph's.
         val hist = IntArray(BINS)
         var n = 0
-        for (i in px.indices) if (wt[i] < 0.25f) {
+        for (i in px.indices) if (wt[i] < 0.25f && photo?.get(i) != true) {
             hist[(lum(source[i]) * BINS).toInt().coerceAtMost(BINS - 1)]++
             n++
         }
@@ -155,7 +171,7 @@ object DuotoneIcon {
         var sum1 = 0.0
         var n0 = 0
         var n1 = 0
-        for (i in px.indices) if (wt[i] < 0.25f) {
+        for (i in px.indices) if (wt[i] < 0.25f && photo?.get(i) != true) {
             val v = lum(source[i])
             if (v < cut) { sum0 += v; n0++ } else { sum1 += v; n1++ }
         }
@@ -171,11 +187,74 @@ object DuotoneIcon {
             // Snap float noise at the means so they land exactly on the pack's sec and pri.
             if (abs(v) < SNAP) 0f else if (abs(v - 1) < SNAP) 1f else v
         }
-        for (i in px.indices) px[i] = paint(px[i], i % w, i / w, t[i], wt[i], glyph)
+        for (i in px.indices) if (photo?.get(i) != true) px[i] = paint(px[i], i % w, i / w, t[i], wt[i], glyph)
     }
 
-    /** Sec/pri running from [left] to [right] across [w] columns, dithered so the gradient has no bands. */
-    private class GlyphTones(left: Tones, right: Tones, private val w: Int) {
+    /** [c] with each channel multiplied by [k], at most 255. */
+    private fun brighten(c: Int, k: Float): Int {
+        var out = 0
+        for (s in 0..16 step 8) out = out or (((c shr s and 0xFF) * k).roundToInt().coerceAtMost(255) shl s)
+        return out
+    }
+
+    /**
+     * The round photos of the people in a call on a Discord voice key (Elgato's Voice Channel key and Discord
+     * Busiest's), which keep their real colours; null on any other icon. Both draw them on Discord's blurple
+     * tile at the slots of the Discord app's own layout for 1, 2 or 3 avatars: the photos are the discs of
+     * the layout that has no tile inside it, except colours that also occur outside the discs (the
+     * member-count pill drawn over them). Photos can't be told from emoji by their pixels alone: a dark,
+     * smooth photo reads as shading, and emoji edges as texture.
+     */
+    private fun avatars(rgb: IntArray, tile: BooleanArray, w: Int, h: Int, main: Int): BooleanArray? {
+        if (dist(main, DISCORD_TILE) > TILE_SEED) return null
+        val scale = w / 144f
+        // Largest first: a smaller layout's discs fit inside a bigger one's photos too.
+        for ((r, xs) in AVATAR_LAYOUTS) {
+            var area = 0
+            var tiles = 0
+            forDiscs(r, xs, w, h, scale) { i ->
+                area++
+                if (tile[i]) tiles++
+            }
+            if (area == 0 || tiles > area * AVATAR_TILE_MAX) continue
+            val disc = BooleanArray(rgb.size)
+            forDiscs(r, xs, w, h, scale) { disc[it] = true }
+            val outside = IntArray(rgb.size - area)
+            var k = 0
+            for (i in rgb.indices) if (!disc[i]) outside[k++] = rgb[i]
+            outside.sort()
+            for (i in rgb.indices) if (disc[i] && outside.binarySearch(rgb[i]) >= 0) disc[i] = false
+            return disc
+        }
+        return null
+    }
+
+    /**
+     * Calls [f] once for each pixel whose centre lies in one of the discs of radius [r] at x [xs] (ascending)
+     * and y 72, in 144 px key units, less the antialiased rim that blends into the tile. Row spans: a test per
+     * pixel and disc cost 1.5-3 ms per Discord key on a P20.
+     */
+    private inline fun forDiscs(r: Float, xs: FloatArray, w: Int, h: Int, scale: Float, f: (Int) -> Unit) {
+        val reach = r - 0.5f / scale
+        for (y in 0 until h) {
+            val dy = (y + 0.5f) / scale - 72f
+            if (abs(dy) > reach) continue
+            val half = sqrt(reach * reach - dy * dy)
+            var from = 0 // overlapping discs: each pixel once
+            for (cx in xs) {
+                val x0 = max(from, ceil((cx - half) * scale - 0.5f).toInt())
+                val x1 = min(w - 1, floor((cx + half) * scale - 0.5f).toInt())
+                for (x in x0..x1) f(y * w + x)
+                from = max(from, x1 + 1)
+            }
+        }
+    }
+
+    /**
+     * Sec/pri running from [left] to [right] across [w] columns, dithered so the gradient has no bands, at
+     * [fade] of the pixel's opacity.
+     */
+    private class GlyphTones(left: Tones, right: Tones, private val w: Int, val fade: Float = 1f) {
         private val bg = channels(left.bg, right.bg)
         private val sec = channels(left.sec, right.sec)
         private val pri = channels(left.pri, right.pri)
@@ -245,7 +324,7 @@ object DuotoneIcon {
      * of its alpha. A pixel that ends up fully transparent skips the colour, the costliest part, and is 0.
      */
     private fun paint(p: Int, x: Int, y: Int, t: Float, tile: Float, glyph: GlyphTones): Int {
-        val alpha = ((p ushr 24) * (1 - tile)).roundToInt().coerceIn(0, 255)
+        val alpha = ((p ushr 24) * (1 - tile) * glyph.fade).roundToInt().coerceIn(0, 255)
         return if (alpha == 0) 0 else alpha shl 24 or glyph.color(x, y, t)
     }
 
@@ -588,6 +667,17 @@ object DuotoneIcon {
     private const val CACHE_SLOTS = 1024
     /** Share of opaque pixels on one pack palette that marks an icon as already Duotone. */
     private const val PACK_SHARE = 0.85f
+    /** An icon whose brightest channel is at most this (about half of 255) is dimmed by a black overlay. */
+    private const val DIM_PEAK = 140
+    /** Discord's blurple key tile (Elgato's backgroundInactive.svg), behind its voice keys' avatars. */
+    private const val DISCORD_TILE = 0x5865F2
+    /**
+     * Avatar disc radius and centre x of each slot, centres at y 72, in a 144 px key, for 1, 2 and 3 avatars
+     * (the Discord app's layout: scale .8333 at 12,12; .6 at 0 and 57.6, 28.8; .5 at 0, 36 and 72, 36).
+     */
+    private val AVATAR_LAYOUTS = listOf(60f to floatArrayOf(72f), 43.2f to floatArrayOf(43.2f, 100.8f), 36f to floatArrayOf(36f, 72f, 108f))
+    /** Share of an avatar layout's discs that may be tile (stray specks) when it is the one drawn. */
+    private const val AVATAR_TILE_MAX = 0.01f
     /** Glyph groups closer than this in mean luminance are treated as one colour. */
     private const val MIN_CONTRAST = 0.15
     /** How far past sec (towards the tile colour) and pri (towards white) shading can go. */
