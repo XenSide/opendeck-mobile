@@ -210,6 +210,41 @@ class DuotoneIconTest {
         assertEquals(purple.pri, at(px, n - 1, 8))
     }
 
+    @Test fun dimmedIconStaysDimmed() {
+        // A white glyph under a 50% black overlay: full primary tone at half opacity, not full primary.
+        val px = icon(0, 0x7F7F7F)
+        DuotoneIcon.recolor(px, n, n, blue, blue, pack)
+        assertEquals(blue.pri, at(px, 5, 5))
+        assert(alpha(px, 5, 5) in 120..135) { "dimmed alpha ${alpha(px, 5, 5)}" }
+    }
+
+    @Test fun discordAvatarsKeepTheirColours() {
+        // A Discord voice key: blurple tile, three photo avatars in the app's 3-slot layout, a white glyph.
+        val n2 = 144
+        val rnd = java.util.Random(1)
+        val key = IntArray(n2 * n2) { i ->
+            val x = i % n2 + 0.5f
+            val y = i / n2 + 0.5f - 72
+            val inDisc = listOf(36f, 72f, 108f).any { (x - it) * (x - it) + y * y <= 36f * 36f }
+            0xFF000000.toInt() or when {
+                inDisc -> rnd.nextInt(0x1000000)
+                y < -50 && x in 60f..84f -> 0xFFFFFF
+                else -> 0x5865F2
+            }
+        }
+        val px = key.clone()
+        DuotoneIcon.recolor(px, n2, n2, blue, blue, pack)
+        for (x in listOf(36, 72, 108)) assertEquals(key[72 * n2 + x], px[72 * n2 + x])
+        assertEquals(0, px[0] ushr 24)
+        assert(px[10 * n2 + 72] != key[10 * n2 + 72] && px[10 * n2 + 72] ushr 24 == 255) // the glyph is recoloured
+        // Without the avatar layout (a glyph only where the avatars were), nothing is kept.
+        val glyph = IntArray(n2 * n2) { i ->
+            0xFF000000.toInt() or if (i / n2 in 60..84 && i % n2 in 30..114) 0xFFFFFF else 0x5865F2
+        }
+        DuotoneIcon.recolor(glyph, n2, n2, blue, blue, pack)
+        assertEquals(blue.pri, glyph[72 * n2 + 72] and 0xFFFFFF)
+    }
+
     @Test fun blendRunsBetweenPalettes() {
         assertEquals(blue, blue.blend(purple, 0f))
         assertEquals(purple, blue.blend(purple, 1f))
