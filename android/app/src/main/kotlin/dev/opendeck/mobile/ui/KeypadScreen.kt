@@ -46,7 +46,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -88,7 +87,6 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import dev.opendeck.core.Dither
 import dev.opendeck.core.Layout
@@ -160,9 +158,9 @@ fun KeypadScreen(vm: AppViewModel) {
                 }
                 if (dir < 0) vm.nextPage() else vm.previousPage() // sent now, it arrives while the page slides
                 pageOffset.animateTo(dir * width.toFloat(), tween(SLIDE_MS))
+                // Never visited, the page lands empty and its keys fill in as their icons arrive (waiting for
+                // the whole page held the swipe until the redraw's 500 ms cap).
                 vm.showCachedPage(target)
-                // Never visited: the neighbour slid in empty, so wait for the desktop's icons before swapping.
-                if (vm.cachedPage(target) == null) snapshotFlow { vm.redrawing }.first { !it }
                 pageOffset.snapTo(0f)
                 neighbor = -1
             }

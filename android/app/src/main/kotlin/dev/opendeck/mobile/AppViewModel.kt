@@ -116,10 +116,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     private var session: Session? = null
-    // Icons show as soon as they arrive. Only during a page redraw (page/device/layout change) are they
-    // held until the burst goes quiet: the server first sends a provisional render of every key
-    // (e.g. plugins drawing multi-key sliders as single keys), then the final one.
+    // Icons show as soon as they arrive. During a page redraw (page/device/layout change) each key waits
+    // KEY_SETTLE_MS after its first icon: the server first sends a provisional render of every key (e.g.
+    // plugins drawing multi-key sliders as single keys), then the final one, so only the final one shows.
+    // Per key, not for the whole page: a page-wide wait for the burst to go quiet never ended while plugins
+    // kept drawing, and held every page change to its 500 ms cap (measured on the P20).
     private val pendingIcons = mutableMapOf<Int, ImageBitmap?>() // null = blank key
+    private val keyFlush = mutableMapOf<Int, Job>()
+    // Keys already showing the redraw's icons; the rest still show the previous page.
+    private val freshKeys = mutableSetOf<Int>()
+    // Ends the redraw: the page counts as complete (cached for swipes) once icons go quiet.
     private var iconFlush: Job? = null
     // Per key, the sequence number of the newest icon received; a render that finishes later than a newer one is dropped.
     private val iconSeq = AtomicLong()
@@ -424,15 +430,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         pendingIcons[index] = image
-        // Each icon restarts the quiet timer, capped so a constantly animating key can't hold the page.
+        if (index !in keyFlush) keyFlush[index] = viewModelScope.launch {
+            delay(KEY_SETTLE_MS)
+            keyFlush.remove(index)
+            showPending(index)
+        }
+        // Each icon restarts the quiet timer, capped so a constantly animating key can't hold the redraw open.
         val left = ICON_MAX_WAIT_MS - (SystemClock.uptimeMillis() - redrawStart)
         scheduleIconFlush(minOf(ICON_QUIET_MS, left))
+    }
+
+    /** Shows [index]'s latest icon from the redraw, if it has one waiting. */
+    private fun showPending(index: Int) {
+        if (!pendingIcons.containsKey(index)) return
+        val img = pendingIcons.remove(index)
+        if (img == null) icons.remove(index) else icons[index] = img
+        freshKeys += index
     }
 
     /** Called on events that redraw every key, before or as their icons arrive. */
     private fun beginRedraw() {
         if (redrawStart >= 0) return
         redrawStart = SystemClock.uptimeMillis()
+        freshKeys.clear()
         scheduleIconFlush(ICON_MAX_WAIT_MS) // ends the hold even if no icon comes
     }
 
@@ -440,9 +460,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         iconFlush?.cancel()
         iconFlush = viewModelScope.launch {
             delay(delayMs)
-            val fresh = pendingIcons.isNotEmpty()
-            pendingIcons.forEach { (i, img) -> if (img == null) icons.remove(i) else icons[i] = img }
-            pendingIcons.clear()
+            val fresh = pendingIcons.isNotEmpty() || freshKeys.isNotEmpty()
+            keyFlush.values.forEach { it.cancel() }
+            keyFlush.clear()
+            pendingIcons.keys.toList().forEach { showPending(it) }
             // The desktop sends the context before the icons, so page is already the one they belong to.
             if (fresh && page.total > 0) pageCache[profileID to page.current] = icons.toMap()
             redrawStart = -1L
@@ -455,6 +476,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         iconFlush?.cancel()
         iconFlush = null
         redrawStart = -1L
+        keyFlush.values.forEach { it.cancel() }
+        keyFlush.clear()
         pendingIcons.clear()
         icons.clear()
         pageCache.clear() // a new device or layout puts different icons at each index
@@ -464,12 +487,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The icons [page] had when last shown, or null if it hasn't been shown since connecting. */
     fun cachedPage(page: Int): Map<Int, ImageBitmap>? = pageCache[profileID to page]
 
-    /** After a swipe lands: shows [page]'s remembered icons until the desktop's own arrive. */
+    /**
+     * After a swipe lands: drops the previous page's icons from keys the redraw hasn't reached yet, filling them
+     * with [page]'s remembered icons if it was shown before. Keys that already show the redraw's icons keep them.
+     */
     fun showCachedPage(page: Int) {
         if (!redrawing) return // the desktop's icons are already up
-        val cached = cachedPage(page) ?: return
-        icons.clear()
-        icons.putAll(cached)
+        val cached = cachedPage(page) ?: emptyMap()
+        for (k in icons.keys.toList()) if (k !in freshKeys) icons.remove(k)
+        for ((k, img) in cached) if (k !in freshKeys) icons[k] = img
     }
 
     fun press(row: Int, col: Int, pressed: Boolean) {
@@ -791,9 +817,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val RETRY_DELAY_MS = 3_000L
         const val MAX_CONNECT_ATTEMPTS = 5
         const val MAX_STORED_ENDPOINTS = 8
-        // How long a page redraw waits for the icon burst to go quiet before showing it. Was 120 ms; the user chose
-        // 60 for faster page changes, accepting that a provisional icon may flash now and then.
+        // Quiet after the last icon that ends a redraw (the page is then complete and cached for swipes).
         private const val ICON_QUIET_MS = 60L
+        // How long a key waits after its first icon in a redraw, so a provisional render followed by the final
+        // one shows only the final.
+        private const val KEY_SETTLE_MS = 60L
         private const val ICON_MAX_WAIT_MS = 500L
         private const val PRESS_MASK_FRACTION = 22f / 144f
         private const val PRESS_MASK_RIM = 3f
