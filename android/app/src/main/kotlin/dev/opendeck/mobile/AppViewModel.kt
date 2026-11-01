@@ -699,7 +699,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun duotone(bmp: Bitmap, left: DuotoneIcon.Tones, right: DuotoneIcon.Tones) {
         val px = IntArray(bmp.width * bmp.height)
         bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-        DuotoneIcon.recolor(px, bmp.width, bmp.height, left, right, Duotones.map { it.tones })
+        DuotoneIcon.recolor(px, bmp.width, bmp.height, left, right, REMAP_PALETTES, KEEP_PALETTES)
         bmp.setPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
     }
 
@@ -762,6 +762,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val PRESS_MASK_FRACTION = 22f / 144f
         private const val PRESS_MASK_RIM = 3f
         val ICON_SIZES = listOf(72, 96, 144, 192)
+        // Blue and purple icons follow the column gradient; orange and red keep their colour (a muted app is red).
+        private val REMAP_PALETTES = listOf(DuotoneBlue, DuotonePurple).map { it.tones }
+        private val KEEP_PALETTES = (Duotones - DuotoneBlue - DuotonePurple).map { it.tones }
         private const val TAG = "OpenDeck"
     }
 }

@@ -28,13 +28,18 @@ object DuotoneIcon {
 
     /**
      * In place. The glyph tones run from [left] at the icon's left edge to [right] at its right edge, so
-     * neighbouring keys continue one smooth gradient. Icons already drawn in one of the [pack] palettes
-     * only swap palettes.
+     * neighbouring keys continue one smooth gradient. Icons already drawn in one of the [remap] palettes
+     * only swap palettes; icons drawn in one of the [keep] palettes keep their colours, which mean something
+     * (Volume Controller NEO's red for a muted app), and only lose their tile.
      */
-    fun recolor(px: IntArray, w: Int, h: Int, left: Tones, right: Tones, pack: List<Tones>) {
+    fun recolor(px: IntArray, w: Int, h: Int, left: Tones, right: Tones, remap: List<Tones>, keep: List<Tones> = emptyList()) {
         val rgb = IntArray(px.size) { rgb(px[it]) }
         val glyph = GlyphTones(left, right, w)
-        if (pack.any { swapPalette(px, rgb, w, it, glyph) }) return
+        // The palette the icon fits best, not the first one over the bar: a red (muted) key's dark bg is also
+        // within reach of the orange palette, and turned orange when orange was checked first.
+        val fits = (remap.map { it to glyph } + keep.map { it to GlyphTones(it, it, w) }).map { Triple(it.first, it.second, packShare(px, rgb, it.first)) }
+        val fit = fits.maxByOrNull { it.third }
+        if (fit != null && fit.third >= PACK_SHARE) return swapPalette(px, rgb, w, fit.first, fit.second)
         val tile = tileMask(rgb, w, h)
         val near = IntArray(px.size)
         val depth = nearestTile(rgb, tile, w, h, near)
@@ -211,20 +216,29 @@ object DuotoneIcon {
         ((p ushr 24) * (1 - tile)).roundToInt().coerceIn(0, 255) shl 24 or glyph
 
     /**
-     * If most opaque pixels are on [from]'s colours, re-expresses every pixel as a mix of two of [from]'s
-     * bg/sec/pri (its projection on the nearest of the three segments between them) and repaints it with
-     * the same mix of the target sec/pri, the bg share becoming transparency: antialiasing and low-contrast
-     * parts survive. Returns false, touching nothing, for other icons.
+     * Share of the opaque pixels on [pal]'s colours or the lines between them. The lines count too: Volume
+     * Controller NEO draws dimmed parts (an inactive app's icon, the unfilled part of a fader) as bg/sec blends
+     * like (66,93,130); counting only the three colours missed those icons, and the general path then lost
+     * their low-contrast parts to the tile.
      */
-    private fun swapPalette(px: IntArray, rgb: IntArray, w: Int, from: Tones, target: GlyphTones): Boolean {
-        val (fb, fs, fp) = from.list
+    private fun packShare(px: IntArray, rgb: IntArray, pal: Tones): Float {
+        val segments = listOf(pal.bg to pal.sec, pal.sec to pal.pri, pal.bg to pal.pri)
         var opaque = 0
         var on = 0
         for (i in px.indices) if (px[i] ushr 24 >= 128) {
             opaque++
-            if (minOf(dist(rgb[i], fb), dist(rgb[i], fs), dist(rgb[i], fp)) <= TILE_SEED) on++
+            if (segments.any { (a, b) -> dist(rgb[i], mix(a, b, project(rgb[i], a, b))) <= TILE_SEED }) on++
         }
-        if (opaque == 0 || on < PACK_SHARE * opaque) return false
+        return if (opaque == 0) 0f else on.toFloat() / opaque
+    }
+
+    /**
+     * Re-expresses every pixel as a mix of two of [from]'s bg/sec/pri (its projection on the nearest of the
+     * three segments between them) and repaints it with the same mix of the target sec/pri, the bg share
+     * becoming transparency: antialiasing and low-contrast parts survive.
+     */
+    private fun swapPalette(px: IntArray, rgb: IntArray, w: Int, from: Tones, target: GlyphTones) {
+        val (fb, fs, fp) = from.list
         // Not a 3-colour barycentric solve: the pack's three tones lie almost on one line, so that system is
         // ill-conditioned and turned a pixel a few levels off the bg into a visible secondary tone.
         val segments = listOf(Triple(fb, fs, 0 to 1), Triple(fs, fp, 1 to 2), Triple(fb, fp, 0 to 2))
@@ -249,7 +263,6 @@ object DuotoneIcon {
             val t = if (glyph < 1e-6f) 0f else wgt[2] / glyph
             px[i] = withTile(px[i], target.color(i % w, i / w, t), wgt[0])
         }
-        return true
     }
 
     /** Position (0..1) of [c]'s projection on the segment from [a] to [b]. */
@@ -451,7 +464,7 @@ object DuotoneIcon {
     private const val BLACK_LUM = 0.06f
     private const val BLACK_RAMP = 0.08f
     /** Share of opaque pixels on one pack palette that marks an icon as already Duotone. */
-    private const val PACK_SHARE = 0.85
+    private const val PACK_SHARE = 0.85f
     /** Glyph groups closer than this in mean luminance are treated as one colour. */
     private const val MIN_CONTRAST = 0.15
     /** How far past sec (towards the tile colour) and pri (towards white) shading can go. */
