@@ -34,6 +34,7 @@ import dev.opendeck.core.SessionListener
 import dev.opendeck.core.SessionState
 import dev.opendeck.core.VirtualDevice
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -44,7 +45,9 @@ import java.io.File
 import java.net.InetAddress
 import java.net.Socket
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import javax.net.SocketFactory
 import kotlin.math.ceil
 import kotlin.math.sqrt
@@ -118,7 +121,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // (e.g. plugins drawing multi-key sliders as single keys), then the final one.
     private val pendingIcons = mutableMapOf<Int, ImageBitmap?>() // null = blank key
     private var iconFlush: Job? = null
-    // The device whose icon style the reader thread applies; set before the open so the first icons get it too.
+    // Per key, the sequence number of the newest icon received; a render that finishes later than a newer one is dropped.
+    private val iconSeq = AtomicLong()
+    private val latestIcon = ConcurrentHashMap<Int, Long>()
+    // The device whose icon style the icon workers apply; set before the open so the first icons get it too.
     @Volatile private var iconStyle: StoredDevice? = null
     // Each visited page's icons, so a swipe can show the next page under the finger before the desktop sends it.
     private val pageCache = mutableMapOf<Pair<String?, Int>, Map<Int, ImageBitmap>>()
@@ -445,6 +451,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun clearIcons() {
+        latestIcon.clear() // icons still rendering for the old device or layout are dropped when they finish
         iconFlush?.cancel()
         iconFlush = null
         redrawStart = -1L
@@ -583,17 +590,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val s = owner ?: return
             when (message) {
                 is ServerMessage.Icon -> {
-                    val rgba = decodeIcon(message) ?: return
-                    // Keys with no action arrive as an all-black image: show nothing so the background shows through.
-                    if (IconCodec.isBlank(rgba)) return onMain(s) { queueIcon(message.index, null) }
-                    val size = message.image!!.size!!
-                    val bmp = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
-                    bmp.copyPixelsFromBuffer(ByteBuffer.wrap(rgba))
-                    // Pressed icons are recognised by their pixels: arrival order vs. release is unreliable.
-                    if (hasPressMask(bmp)) fillPressMask(bmp) // reader thread, before the bitmap is shared
-                    iconStyle?.let { dev -> dev.iconTones(message.index % dev.cols)?.let { (l, r) -> duotone(bmp, l, r) } }
-                    val image = bmp.asImageBitmap()
-                    onMain(s) { queueIcon(message.index, image) }
+                    // Decoding and recolouring run on worker threads, several icons at once, so the reader thread
+                    // is free for the next message. Icons can then finish out of order: only the newest one for
+                    // each key is shown.
+                    val seq = iconSeq.incrementAndGet()
+                    latestIcon[message.index] = seq
+                    viewModelScope.launch(Dispatchers.Default) {
+                        val image = renderIcon(message)
+                        onMain(s) { if (latestIcon[message.index] == seq) queueIcon(message.index, image) }
+                    }
                 }
                 is ServerMessage.Context -> onMain(s) {
                     beginRedraw() // a full context means a page or profile switch, also ones made on the desktop
@@ -703,6 +708,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // Stream Deck re-sends identical icons on every page change and after each key's pressed image, and this
     // runs on the reader thread, ahead of the next message: recolour each distinct icon once.
     private val recolourCache = LruCache<List<Any>, Recoloured>(RECOLOUR_CACHE_SIZE)
+
+    /** The icon ready to draw, or null for a blank key; on a worker thread. */
+    private fun renderIcon(message: ServerMessage.Icon): ImageBitmap? {
+        val rgba = decodeIcon(message) ?: return null
+        // Keys with no action arrive as an all-black image: show nothing so the background shows through.
+        if (IconCodec.isBlank(rgba)) return null
+        val size = message.image!!.size!!
+        val bmp = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
+        bmp.copyPixelsFromBuffer(ByteBuffer.wrap(rgba))
+        // Pressed icons are recognised by their pixels: arrival order vs. release is unreliable.
+        if (hasPressMask(bmp)) fillPressMask(bmp) // before the bitmap is shared
+        iconStyle?.let { dev -> dev.iconTones(message.index % dev.cols)?.let { (l, r) -> duotone(bmp, l, r) } }
+        return bmp.asImageBitmap()
+    }
 
     private fun duotone(bmp: Bitmap, left: DuotoneIcon.Tones, right: DuotoneIcon.Tones) {
         val px = IntArray(bmp.width * bmp.height)
